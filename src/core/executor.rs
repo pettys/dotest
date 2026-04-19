@@ -31,12 +31,12 @@ pub fn discover_tests(no_build: bool) -> Result<Vec<(String, String)>> {
 
 
 
-fn strip_params(s: &str) -> String {
+pub(crate) fn strip_params(s: &str) -> String {
     if let Some(p) = s.find('(') { s[..p].to_string() } else { s.to_string() }
 }
 
 /// Enrich a display‐name base into a `folder.class.method` tree path.
-fn enrich(
+pub(crate) fn enrich(
     base: &str,
     method_map: &HashMap<String, (String, String)>,   // method -> (folder, class)
     class_map:  &HashMap<String, String>,              // class  -> folder
@@ -175,7 +175,7 @@ fn parse_cs_file(
     }
 }
 
-fn is_test_attribute(line: &str) -> bool {
+pub(crate) fn is_test_attribute(line: &str) -> bool {
     line.starts_with("[Test]")
         || line.starts_with("[Test(")
         || line.starts_with("[TestCase")
@@ -187,10 +187,18 @@ fn is_test_attribute(line: &str) -> bool {
 
 /// Extract method name from a method signature line.
 /// e.g. `public void Foo()` -> `Foo`, `public async Task Bar(int x)` -> `Bar`
-fn extract_method_name(line: &str) -> Option<String> {
+pub(crate) fn extract_method_name(line: &str) -> Option<String> {
     let paren_idx = line.find('(')?;
-    let before = line[..paren_idx].trim();
-    // Take the last identifier before '('
+    let mut before = line[..paren_idx].trim();
+    
+    // Handle NUnit generic tests like MyTest<T>()
+    if before.ends_with('>') {
+        if let Some(angle_idx) = before.rfind('<') {
+            before = before[..angle_idx].trim();
+        }
+    }
+
+    // Take the last identifier before '(' or '<'
     let name: String = before.chars().rev()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect::<String>()
@@ -207,7 +215,7 @@ fn extract_method_name(line: &str) -> Option<String> {
 }
 
 /// Extract class name from a `class X` declaration line.
-fn extract_class_name(line: &str) -> Option<String> {
+pub(crate) fn extract_class_name(line: &str) -> Option<String> {
     let mut rest = line;
     loop {
         rest = rest.trim_start();
@@ -217,7 +225,7 @@ fn extract_class_name(line: &str) -> Option<String> {
     }
     rest = rest.trim_start();
     if rest.starts_with("class ") {
-        let after = &rest["class ".len()..];
+        let after = rest["class ".len()..].trim_start();
         let name: String = after.chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();

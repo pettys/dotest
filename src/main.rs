@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use anyhow::Result;
 
 mod commands;
+#[cfg(test)]
+mod tests;
 mod core;
 
 #[derive(Parser)]
