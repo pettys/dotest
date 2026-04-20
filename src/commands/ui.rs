@@ -73,8 +73,12 @@ pub fn run() -> Result<()> {
     
     let tests = if config.cache_tests {
         if let Ok(s) = std::fs::read_to_string(".dotest_cache.json") {
-            if let Ok(cached) = serde_json::from_str::<Vec<(String, String)>>(&s) {
-                cached
+            if let Ok(cached) = serde_json::from_str::<Vec<(String, String, usize)>>(&s) {
+                if cached.is_empty() {
+                    discover_and_cache()?
+                } else {
+                    cached
+                }
             } else {
                 discover_and_cache()?
             }
@@ -94,7 +98,7 @@ pub fn run() -> Result<()> {
     run_interactive_loop(&mut tree, config)
 }
 
-fn discover_and_cache() -> Result<Vec<(String, String)>> {
+fn discover_and_cache() -> Result<Vec<(String, String, usize)>> {
     println!("Discovering tests (this may take a moment)...");
     let tests = discover_tests(true)?;
     if let Ok(s) = serde_json::to_string(&tests) {
@@ -122,7 +126,14 @@ fn build_filter(tree: &[TreeNode]) -> Option<String> {
             let parent_is_selected = node.parent_idx.map_or(false, |pid| tree[pid].is_selected);
             if !parent_is_selected {
                 if let Some(fqn) = node.fqn.as_deref() {
-                    include_nodes.push(format!("FullyQualifiedName~{}", fqn));
+                    let pat = if node.is_leaf {
+                        fqn.to_string()
+                    } else if fqn.ends_with('.') {
+                        fqn.to_string()
+                    } else {
+                        format!("{}.", fqn)
+                    };
+                    include_nodes.push(format!("FullyQualifiedName~{}", pat));
                 }
             }
         }
@@ -391,8 +402,8 @@ fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> 
             state.select(Some(0));
         }
 
-        let selected_count = tree.iter().filter(|n| n.is_leaf && n.is_selected).count();
-        let total_count = tree.iter().filter(|n| n.is_leaf).count();
+        let selected_count: usize = tree.iter().filter(|n| n.is_leaf && n.is_selected).map(|n| n.test_count).sum();
+        let total_count: usize = tree.iter().filter(|n| n.is_leaf).map(|n| n.test_count).sum();
 
         // ── Draw ────────────────────────────────────────────────────────
         let has_output = !output_lines.is_empty();
@@ -511,8 +522,7 @@ fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> 
                 let config_items = vec![
                     format!("  {} Skip build (--no-build)", if run_config.no_build { "[x]" } else { "[ ]" }),
                     format!("  {} Verbose (Normal)", if run_config.verbosity == Verbosity::Normal { "(*)" } else { "( )" }),
-                    // Not working, needs fix
-					// format!("  {} Verbose (Detailed)", if run_config.verbosity == Verbosity::Detailed { "(*)" } else { "( )" }),
+                    format!("  {} Verbose (Detailed)", if run_config.verbosity == Verbosity::Detailed { "(*)" } else { "( )" }),
                     format!("  {} Verbose (Minimal)", if run_config.verbosity == Verbosity::Minimal { "(*)" } else { "( )" }),
                     format!("  {} Cache discovered tests", if run_config.cache_tests { "[x]" } else { "[ ]" }),
                 ];
@@ -659,7 +669,8 @@ fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> 
                         *tree = build_flat_tree(&tests);
                         state.select(Some(0));
                         search_query.clear();
-                        output_lines.push(format!("✓ Found {} tests.", tests.len()));
+                        let total: usize = tests.iter().map(|(_, _, c)| c).sum();
+                        output_lines.push(format!("✓ Found {} tests ({} methods).", total, tests.len()));
                     } else {
                         output_lines.push("✗ Failed to discover tests.".to_string());
                     }
@@ -685,7 +696,7 @@ fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> 
                         let filter = build_filter(tree);
                         if let Some(filter_str) = filter {
                             output_lines.clear();
-                            let sel_count = tree.iter().filter(|n| n.is_leaf && n.is_selected).count();
+                            let sel_count: usize = tree.iter().filter(|n| n.is_leaf && n.is_selected).map(|n| n.test_count).sum();
                             output_lines.push(format!("━━━ Running {} selected tests... ━━━", sel_count));
                             if filter_str.is_empty() {
                                 output_lines.push("  (all tests, no filter)".to_string());

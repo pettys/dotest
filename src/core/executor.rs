@@ -1,38 +1,185 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use crate::core::config::Config;
 
 
 
-/// Returns `(tree_fqn, filter_key)` pairs.
-pub fn discover_tests(no_build: bool) -> Result<Vec<(String, String)>> {
+/// Returns `(tree_fqn, filter_key, test_count)` triples.
+/// `filter_key` is a VSTest-friendly substring for `FullyQualifiedName~` (typically `Namespace.Class.Method`).
+/// `test_count` is the number of `dotnet test -t` lines for that logical test method.
+pub fn discover_tests(no_build: bool) -> Result<Vec<(String, String, usize)>> {
     let display_names = discover_display_names(no_build)?;
     if display_names.is_empty() {
         return Ok(Vec::new());
     }
 
-    let test_root = find_test_project_root(Path::new("."));
-    let scan_root = test_root.as_deref().unwrap_or(Path::new("."));
-    let (method_map, class_map) = scan_source_maps(scan_root);
+    let test_roots = find_test_project_roots(Path::new("."));
+    
+    let mut method_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut class_map = HashMap::new();
+    for root in &test_roots {
+        let (m, c) = scan_source_maps(root);
+        for (k, mut v) in m {
+            method_map.entry(k).or_default().append(&mut v);
+        }
+        class_map.extend(c);
+    }
+    for v in method_map.values_mut() {
+        v.sort_by(|a, b| a.1.cmp(&b.1));
+    }
 
-    let mut result: Vec<(String, String)> = Vec::new();
-    for dn in &display_names {
-        let filter_key = strip_params(dn);
-        let tree_fqn = enrich(&filter_key, &method_map, &class_map);
-        if !result.iter().any(|(_, k)| k == &filter_key) {
-            result.push((tree_fqn, filter_key));
+    Ok(build_discovery_entries(&display_names, &method_map, &class_map))
+}
+
+/// Maps each `dotnet test -t` line to a source method, merges counts, and builds vstest filter keys.
+pub(crate) fn build_discovery_entries(
+    display_names: &[String],
+    methods: &HashMap<String, Vec<(String, String)>>,
+    class_map: &HashMap<String, String>,
+) -> Vec<(String, String, usize)> {
+    let flat_for_enrich = flatten_methods_for_enrich(methods);
+
+    // Group list indices by short method name (order within group: sorted display string)
+    let mut by_short: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
+    for (i, dn) in display_names.iter().enumerate() {
+        let short = strip_params(dn);
+        by_short.entry(short).or_default().push((i, dn.clone()));
+    }
+
+    let mut per_line: Vec<Option<(String, String)>> = vec![None; display_names.len()];
+
+    for (short, mut group) in by_short {
+        group.sort_by(|a, b| a.1.cmp(&b.1));
+        let cands = methods.get(&short).cloned().unwrap_or_default();
+        if cands.is_empty() {
+            continue;
+        }
+        if cands.len() == 1 {
+            let (folder, qc) = cands[0].clone();
+            for (i, _) in group {
+                per_line[i] = Some((folder.clone(), qc.clone()));
+            }
+            continue;
+        }
+        let m = cands.len();
+        for (j, (i, _)) in group.iter().enumerate() {
+            let pick = cands[j % m].clone();
+            per_line[*i] = Some(pick);
         }
     }
 
-    Ok(result)
+    let mut out: Vec<(String, String, usize)> = Vec::new();
+    let mut key_pos: HashMap<String, usize> = HashMap::new();
+
+    for (i, dn) in display_names.iter().enumerate() {
+        let short = strip_params(dn);
+        let (tree_fqn, fk) = match &per_line[i] {
+            Some((folder, qc)) => {
+                let fk = qualified_filter_key(qc, &short);
+                let tree = tree_fqn_from_qualified(folder, qc, &short);
+                (tree, fk)
+            }
+            None => {
+                let tree = enrich(&short, &flat_for_enrich, class_map);
+                (tree, short.clone())
+            }
+        };
+        if let Some(&pos) = key_pos.get(&fk) {
+            out[pos].2 += 1;
+        } else {
+            key_pos.insert(fk.clone(), out.len());
+            out.push((tree_fqn, fk, 1));
+        }
+    }
+
+    out
+}
+
+fn qualified_filter_key(qualified_class: &str, short_method: &str) -> String {
+    format!("{}.{}", qualified_class, short_method)
+}
+
+/// Visual tree path: **on-disk folder** first (matches the test project layout in the IDE), then
+/// class, then method. VSTest filters use `filter_key` (full qualified class + method) on leaves;
+/// non-leaf filter strings are filled in by `build_flat_tree` after the flat list is built.
+fn tree_fqn_from_qualified(folder: &str, qualified_class: &str, short_method: &str) -> String {
+    let class_simple = qualified_class.rsplit('.').next().unwrap_or(qualified_class);
+    if folder.is_empty() {
+        format!("{}.{}", class_simple, short_method)
+    } else {
+        format!("{}.{}.{}", folder, class_simple, short_method)
+    }
+}
+
+fn flatten_methods_for_enrich(
+    methods: &HashMap<String, Vec<(String, String)>>,
+) -> HashMap<String, (String, String)> {
+    methods
+        .iter()
+        .filter_map(|(short, v)| {
+            v.first().map(|(folder, qc)| {
+                let cls_simple = qc.rsplit('.').next().unwrap_or(qc.as_str()).to_string();
+                (short.clone(), (folder.clone(), cls_simple))
+            })
+        })
+        .collect()
+}
+
+fn extract_namespace_declaration(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    if !t.starts_with("namespace ") {
+        return None;
+    }
+    let rest = t["namespace ".len()..].trim_start();
+    let end = rest.find(|c| c == '{' || c == ';')?;
+    let name = rest[..end].trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 
 
 pub(crate) fn strip_params(s: &str) -> String {
-    if let Some(p) = s.find('(') { s[..p].to_string() } else { s.to_string() }
+    let mut res = String::new();
+    let mut paren_depth: usize = 0;
+    let mut angle_depth: usize = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for c in s.chars() {
+        if escape {
+            escape = false;
+            if paren_depth == 0 && angle_depth == 0 { res.push(c); }
+            continue;
+        }
+        if c == '\\' {
+            escape = true;
+            if paren_depth == 0 && angle_depth == 0 { res.push(c); }
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            if paren_depth == 0 && angle_depth == 0 { res.push(c); }
+            continue;
+        }
+
+        if !in_string {
+            if c == '(' { paren_depth += 1; continue; }
+            if c == ')' { paren_depth = paren_depth.saturating_sub(1); continue; }
+            if c == '<' { angle_depth += 1; continue; }
+            if c == '>' { angle_depth = angle_depth.saturating_sub(1); continue; }
+        }
+
+        if paren_depth == 0 && angle_depth == 0 {
+            res.push(c);
+        }
+    }
+    res.trim().to_string()
 }
 
 /// Enrich a display‐name base into a `folder.class.method` tree path.
@@ -72,37 +219,27 @@ pub(crate) fn enrich(
         // Scan segments to find a known class name and strip the namespace prefix.
         _ => {
             // Try to find a known class name among the segments.
-            // Walk from left to right; the first matching segment is the class.
             let mut class_idx: Option<usize> = None;
             for (i, &seg) in parts.iter().enumerate() {
-                if class_map.contains_key(seg) {
+                // Strip generics before class lookup
+                let base_seg = strip_params(seg);
+                if class_map.contains_key(&base_seg) {
                     class_idx = Some(i);
                     break;
                 }
             }
 
             if let Some(ci) = class_idx {
-                // Everything from the class segment onward is kept
                 let suffix = parts[ci..].join(".");
-                let folder = &class_map[parts[ci]];
-                if folder.is_empty() {
-                    suffix
-                } else {
-                    format!("{}.{}", folder, suffix)
-                }
+                let folder = &class_map[&strip_params(parts[ci])];
+                if folder.is_empty() { suffix } else { format!("{}.{}", folder, suffix) }
             } else {
-                // No class segment found. Try looking up the LAST segment as a method
-                // to at least find the folder.
                 let last = *parts.last().unwrap();
-                if let Some((folder, class)) = method_map.get(last) {
-                    // Find the class name in parts so we can strip namespace
-                    if let Some(ci) = parts.iter().position(|&s| s == class.as_str()) {
+                let last_base = strip_params(last);
+                if let Some((folder, class)) = method_map.get(&last_base) {
+                    if let Some(ci) = parts.iter().position(|&s| strip_params(s) == class.as_str()) {
                         let suffix = parts[ci..].join(".");
-                        if folder.is_empty() {
-                            suffix
-                        } else {
-                            format!("{}.{}", folder, suffix)
-                        }
+                        if folder.is_empty() { suffix } else { format!("{}.{}", folder, suffix) }
                     } else if !folder.is_empty() {
                         format!("{}.{}", folder, base)
                     } else {
@@ -117,10 +254,10 @@ pub(crate) fn enrich(
 }
 
 /// Returns (method_map, class_map):
-///   method_map: method_name -> (relative_folder, class_name)
-///   class_map:  class_name  -> relative_folder
-fn scan_source_maps(root: &Path) -> (HashMap<String, (String, String)>, HashMap<String, String>) {
-    let mut method_map: HashMap<String, (String, String)> = HashMap::new();
+///   method_map: short_method_name -> [(relative_folder, qualified_class_name), ...]
+///   class_map:  simple class_name  -> relative_folder
+fn scan_source_maps(root: &Path) -> (HashMap<String, Vec<(String, String)>>, HashMap<String, String>) {
+    let mut method_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut class_map: HashMap<String, String> = HashMap::new();
     walk_cs(root, root, &mut method_map, &mut class_map, 0);
     (method_map, class_map)
@@ -128,7 +265,7 @@ fn scan_source_maps(root: &Path) -> (HashMap<String, (String, String)>, HashMap<
 
 fn walk_cs(
     root: &Path, dir: &Path,
-    methods: &mut HashMap<String, (String, String)>,
+    methods: &mut HashMap<String, Vec<(String, String)>>,
     classes: &mut HashMap<String, String>,
     depth: usize,
 ) {
@@ -153,7 +290,7 @@ fn walk_cs(
 
 fn parse_cs_file(
     path: &Path, dir_str: &str,
-    methods: &mut HashMap<String, (String, String)>,
+    methods: &mut HashMap<String, Vec<(String, String)>>,
     classes: &mut HashMap<String, String>,
 ) {
     let content = match std::fs::read_to_string(path) { Ok(c) => c, Err(_) => return };
@@ -162,15 +299,23 @@ fn parse_cs_file(
 
 pub(crate) fn parse_cs_content(
     content: &str, dir_str: &str,
-    methods: &mut HashMap<String, (String, String)>,
+    methods: &mut HashMap<String, Vec<(String, String)>>,
     classes: &mut HashMap<String, String>,
 ) {
+    // UTF-8 BOM (U+FEFF) breaks `namespace` on line 1 — common for VS-saved .cs files.
+    let content = content.trim_start_matches('\u{feff}');
     let mut current_class: Option<String> = None;
     let mut has_test_attr = false;
+    let mut namespace = String::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() { continue; }
+
+        if let Some(ns) = extract_namespace_declaration(trimmed) {
+            namespace = ns;
+            continue;
+        }
 
         let stripped = strip_attributes(trimmed);
 
@@ -192,8 +337,12 @@ pub(crate) fn parse_cs_content(
 
             if let Some(method_name) = extract_method_name(stripped) {
                 if let Some(ref cls) = current_class {
-                    methods.entry(method_name)
-                        .or_insert_with(|| (dir_str.to_string(), cls.clone()));
+                    let qualified = if namespace.is_empty() {
+                        cls.clone()
+                    } else {
+                        format!("{}.{}", namespace, cls)
+                    };
+                    methods.entry(method_name).or_default().push((dir_str.to_string(), qualified));
                 }
             }
             has_test_attr = false;
@@ -242,13 +391,28 @@ pub(crate) fn strip_attributes(mut s: &str) -> &str {
 }
 
 pub(crate) fn is_test_attribute(line: &str) -> bool {
-    line.starts_with("[Test]")
-        || line.starts_with("[Test(")
-        || line.starts_with("[TestCase")
-        || line.starts_with("[Theory")
-        || line.starts_with("[Fact")
-        || line.starts_with("[TestMethod")
-        || line.starts_with("[Test,")
+    let trimmed = line.trim();
+    if !trimmed.starts_with('[') || !trimmed.contains(']') { return false; }
+    
+    // Extract the content inside the FIRST set of brackets
+    let end_bracket = trimmed.find(']').unwrap();
+    let content = &trimmed[1..end_bracket];
+    
+    // Check for any known test attribute keywords (case-insensitive for robustness)
+    let lower = content.to_lowercase();
+    let keywords = [
+        "test", "testcase", "testcasesource", "fact", "theory", 
+        "datarow", "testmethod"
+    ];
+    
+    for kw in keywords {
+        // Match the keyword either as the whole word or followed by a comma/paren 
+        // (to handle [Test, Category("Slow")] or [TestCase(1)])
+        if lower == kw || lower.starts_with(&format!("{}(", kw)) || lower.starts_with(&format!("{},", kw)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Extract method name from a method signature line.
@@ -314,18 +478,21 @@ fn strip_modifier(s: &str) -> &str {
     s
 }
 
-fn find_test_project_root(root: &Path) -> Option<std::path::PathBuf> {
+fn find_test_project_roots(root: &Path) -> Vec<std::path::PathBuf> {
     let mut results = Vec::new();
     collect_csproj(root, 0, &mut results);
-    for csproj in &results {
-        if let Ok(content) = std::fs::read_to_string(csproj) {
-            if content.contains("NUnit") || content.contains("xunit")
-                || content.contains("MSTest") || content.contains("nunit") {
-                return csproj.parent().map(|p| p.to_path_buf());
+    let mut test_roots = Vec::new();
+    for csproj in results {
+        if let Ok(content) = std::fs::read_to_string(&csproj) {
+            let lower = content.to_lowercase();
+            if lower.contains("nunit") || lower.contains("xunit") || lower.contains("mstest") {
+                if let Some(p) = csproj.parent() {
+                    test_roots.push(p.to_path_buf());
+                }
             }
         }
     }
-    None
+    test_roots
 }
 
 fn collect_csproj(dir: &Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
@@ -354,7 +521,18 @@ fn discover_display_names(no_build: bool) -> Result<Vec<String>> {
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed == "The following Tests are available:" { capturing = true; continue; }
-        if capturing && !trimmed.is_empty() { tests.push(trimmed.to_string()); }
+        
+        if capturing && !trimmed.is_empty() {
+            let lower = trimmed.to_lowercase();
+            // Skip obvious summary/footer lines (some SDKs append these after the list)
+            let is_garbage = lower.starts_with("total tests:")
+                || lower.starts_with("passed:")
+                || lower.starts_with("failed:")
+                || lower.starts_with("skipped:");
+            if !is_garbage {
+                tests.push(trimmed.to_string());
+            }
+        }
     }
     Ok(tests)
 }

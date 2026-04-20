@@ -19,6 +19,14 @@ struct Cli {
 enum Commands {
     /// Open interactive UI mode
     Ui,
+    /// Print total `dotnet test -t` line count under a namespace (same basis as UI subtree totals)
+    #[command(alias = "c")]
+    Count {
+        /// Short segment (Groups, Imports) or full prefix (Tmly.Test.Imports). Short names pick the longest matching prefix in discovery output.
+        folder: String,
+        #[arg(long)]
+        no_build: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -27,6 +35,9 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Ui => {
             commands::ui::run()?;
+        }
+        Commands::Count { folder, no_build } => {
+            commands::count::run(folder.clone(), *no_build)?;
         }
     }
 

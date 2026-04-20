@@ -1,5 +1,114 @@
 use std::collections::HashMap;
-use crate::core::executor::{strip_params, is_test_attribute, extract_method_name, extract_class_name, enrich, parse_cs_content};
+use crate::core::executor::{
+    strip_params, is_test_attribute, extract_method_name, extract_class_name, enrich, parse_cs_content,
+    build_discovery_entries,
+};
+
+/// Parametric tests: many `dotnet test -t` lines map to one source method → one leaf, merged count.
+#[test]
+fn test_build_discovery_parametric_collapses_to_one_row() {
+    let mut methods = HashMap::new();
+    methods.insert(
+        "ValueTypes".to_string(),
+        vec![("Tests".to_string(), "Ns.Tests.JsonTests".to_string())],
+    );
+    let display_names = vec![
+        "ValueTypes(\"1\")".to_string(),
+        "ValueTypes(\"2\")".to_string(),
+        "ValueTypes(\"3\")".to_string(),
+    ];
+    let class_map = HashMap::new();
+    let out = build_discovery_entries(&display_names, &methods, &class_map);
+    assert_eq!(out.len(), 1, "same method, multiple list lines -> one row with merged count");
+    assert_eq!(out[0].2, 3);
+}
+
+/// UTF-8 BOM before `namespace` must not hide the namespace (Visual Studio default for new files).
+#[test]
+fn test_parse_cs_content_utf8_bom_before_namespace() {
+    let content = "\u{feff}namespace Acme.Tests;\npublic class T {\n    [Test] public void M() {}\n}\n";
+    let mut methods = HashMap::new();
+    let mut classes = HashMap::new();
+    parse_cs_content(content, "Acme", &mut methods, &mut classes);
+    assert!(methods.contains_key("M"), "method should be found when BOM precedes namespace");
+    let (_, qc) = &methods["M"][0];
+    assert!(
+        qc.starts_with("Acme.Tests."),
+        "qualified class should include namespace, got {}",
+        qc
+    );
+}
+
+/// Tree path is disk-folder first (like VS Code), VSTest filter stays fully qualified.
+#[test]
+fn test_tree_fqn_disk_folder_then_class_method() {
+    let mut methods = HashMap::new();
+    methods.insert(
+        "DoThing".to_string(),
+        vec![(
+            "Groups".to_string(),
+            "Tmly.Test.Groups.OrgTreeTests".to_string(),
+        )],
+    );
+    let display_names = vec!["DoThing(\"a\")".to_string()];
+    let class_map = HashMap::new();
+    let out = build_discovery_entries(&display_names, &methods, &class_map);
+    assert_eq!(out[0].0, "Groups.OrgTreeTests.DoThing");
+    assert_eq!(out[0].1, "Tmly.Test.Groups.OrgTreeTests.DoThing");
+}
+
+/// When many list lines share a short name across several classes, distribute rows round-robin
+/// so parametric cases are not all attributed to the last class (which skews folder totals).
+#[test]
+fn test_build_discovery_ambiguous_round_robin_parametric() {
+    let mut methods = HashMap::new();
+    methods.insert(
+        "Dup".to_string(),
+        vec![
+            ("F1".to_string(), "Ns.Alpha.C1".to_string()),
+            ("F1".to_string(), "Ns.Beta.C2".to_string()),
+        ],
+    );
+    // folder F1 + qualified Ns.Alpha.C1 / Ns.Beta.C2 → tree path F1.C1.Dup / F1.C2.Dup
+    let display_names = vec![
+        "Dup(1)".to_string(),
+        "Dup(2)".to_string(),
+        "Dup(3)".to_string(),
+        "Dup(4)".to_string(),
+    ];
+    let class_map = HashMap::new();
+    let out = build_discovery_entries(&display_names, &methods, &class_map);
+    let c1: usize = out
+        .iter()
+        .filter(|(t, _, _)| t.contains("F1.C1.Dup"))
+        .map(|(_, _, c)| c)
+        .sum();
+    let c2: usize = out
+        .iter()
+        .filter(|(t, _, _)| t.contains("F1.C2.Dup"))
+        .map(|(_, _, c)| c)
+        .sum();
+    assert_eq!(c1, 2, "round-robin: 4 lines / 2 classes");
+    assert_eq!(c2, 2);
+}
+
+/// Same short method name in different classes must become separate discovery rows (distinct filters).
+#[test]
+fn test_build_discovery_duplicate_short_method_names_one_row_per_class() {
+    let mut methods = HashMap::new();
+    methods.insert(
+        "SmokeTest".to_string(),
+        vec![
+            ("Imports".to_string(), "Tmly.Test.Imports.ImportRollupTests".to_string()),
+            ("ImportLookupCluesTest".to_string(), "Tmly.Test.Imports.ImportLookupCluesTest".to_string()),
+        ],
+    );
+    let display_names = vec!["SmokeTest".to_string(), "SmokeTest".to_string()];
+    let class_map = HashMap::new();
+    let out = build_discovery_entries(&display_names, &methods, &class_map);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out.iter().map(|(_, _, c)| c).sum::<usize>(), 2);
+}
 
 #[test]
 fn test_strip_params() {
@@ -11,6 +120,13 @@ fn test_strip_params() {
 
     // Standard parameterless
     assert_eq!(strip_params("Namespace.Class.Method"), "Namespace.Class.Method");
+
+    // Complex balanced parens with content
+    assert_eq!(strip_params("Namespace.Class.Method(\"val (with paren)\")"), "Namespace.Class.Method");
+
+    // Generic methods
+    assert_eq!(strip_params("Namespace.Class.Method<int>(1)"), "Namespace.Class.Method");
+    assert_eq!(strip_params("Namespace.Class.Method<string>"), "Namespace.Class.Method");
 }
 
 #[test]
@@ -18,6 +134,8 @@ fn test_test_attributes() {
     // NUnit
     assert!(is_test_attribute("[Test]"));
     assert!(is_test_attribute("[TestCase(1, 2)]"));
+    assert!(is_test_attribute("[TestCase]")); // bare
+    assert!(is_test_attribute("[TestCaseSource(\"src\")]"));
     assert!(is_test_attribute("[Test, Category(\"Slow\")]"));
     
     // XUnit specific
@@ -26,9 +144,11 @@ fn test_test_attributes() {
     
     // MSTest specific
     assert!(is_test_attribute("[TestMethod]"));
+    assert!(is_test_attribute("[DataRow(1)]"));
     
     // Safety
     assert!(!is_test_attribute("[Tast]")); // typo
+    assert!(!is_test_attribute("Just text [Test]")); // not starting with [
 }
 
 #[test]
@@ -116,6 +236,11 @@ fn test_enrich_strips_namespace_for_deep_path() {
     let fqn3 = "Tmly.Test.Conversion.Rules.IfWorkedRuleTests.GetLookBackDate_ForTopUp_WorksOkWithTimesheetImpact";
     assert_eq!(enrich(fqn3, &method_map, &class_map),
         "Conversion.Rules.IfWorkedRuleTests.GetLookBackDate_ForTopUp_WorksOkWithTimesheetImpact");
+
+    // Generic method in display name should match non-generic in source map
+    let fqn_gen = "Tmly.Test.Conversion.Rules.IfWorkedRuleTests.GenericMethod<int>";
+    method_map.insert("GenericMethod".to_string(), ("Conversion.Rules".to_string(), "IfWorkedRuleTests".to_string()));
+    assert_eq!(enrich(fqn_gen, &method_map, &class_map), "Conversion.Rules.IfWorkedRuleTests.GenericMethod<int>");
 }
 #[test]
 fn test_enrich_simple_class_dot_method() {
@@ -194,9 +319,9 @@ public class IfWorkedRuleTests : ConversionRuleTests {
         "Should find TestCase-attributed method");
 
     // Verify folder mapping is correct for each method
-    let (folder, class) = &methods["GroupingRule_Simple"];
+    let (folder, qc) = &methods["GroupingRule_Simple"][0];
     assert_eq!(folder, "Conversion.Rules");
-    assert_eq!(class, "IfWorkedRuleTests");
+    assert!(qc.ends_with(".IfWorkedRuleTests"), "qualified class: {}", qc);
 }
 
 #[test]
@@ -241,8 +366,152 @@ public class BreakTests {
     for name in &["AdjustmentLines_AreIgnoredWhenValidatingBreaks",
                    "NotifyUserOfInactivatedPurchaseOrder",
                    "NormalTest"] {
-        let (folder, class) = &methods[*name];
+        let (folder, qc) = &methods[*name][0];
         assert_eq!(folder, "Integration", "Wrong folder for {}", name);
-        assert_eq!(class, "BreakTests", "Wrong class for {}", name);
+        assert_eq!(qc, "BreakTests", "Wrong class for {}", name);
+    }
+}
+
+#[test]
+fn test_user_reported_count_mismatch() {
+    let mut methods = HashMap::new();
+    let mut classes = HashMap::new();
+
+    let content_gqh = r##"
+namespace Tmly.Test.Groups;
+public class GroupQueryHandlerTest {
+	[SetUp] public async Task Setup() => _scene = null;
+	[TearDown] public void TearDown() => _scene?.TearDown();
+
+	[Test] public async Task BasicFiltersByTypeAndSearchText() { }
+	[Test] public async Task FiltersByBlankGroupType() { }
+	[Test] public async Task QueryParam_UseBoostTest() { }
+	[Test] public async Task CanLimitScopeUnderTmlyGroupId() { }
+
+	[TestCase(null)]
+	[TestCase(BaseQueryRequest.FieldOptions.All)]
+	[TestCase(BaseQueryRequest.FieldOptions.Minimal)]
+	public async Task QueryParam_FieldsTest(string fields) { }
+
+	[TestCase("apple", null, null, "apple, store1, store2")]
+	[TestCase("apple", "cus", null, "apple")]
+	[TestCase("apple", "loc", null, "store1, store2")]
+	[TestCase("apple", null, "fud", "")]
+	[TestCase("store1", null, null, "store1")]
+	[TestCase("store1", "cus", null, "")]
+	[TestCase("store1", null, "fud", "")]
+	public async Task ProperlyRestrictsByGroupBasedPermission(string permissionScope, string type, string search, string results) { }
+
+	[TestCase("s1", null, null, "apple, store1")]
+	[TestCase("s1, fudge", null, null, "apple, fudge, store1, storeA, storeB")]
+	public async Task ProperlyRestrictsByPlacementBasedPermission(string permissionScope, string type, string search, string results) { }
+}
+"##;
+
+    let content_group_tests = r##"
+namespace Tmly.Test.Groups;
+public class GroupTests {
+	[TestCase("root", null, true)]
+	[TestCase("root", "root", true)]
+	[TestCase("g2_a", "g2_b", false)]
+	[TestCase("g2_b_b_a", "g1", false)]
+	[TestCase("g2_b", "g2_b_a", false)]
+	[TestCase("g2_b", "root", true)]
+	[TestCase("g2_a", "g2", true)]
+	[TestCase("g2_b", "g2", true)]
+	[TestCase("g2_b_a", "g2", true)]
+	[TestCase("g2_b_b", "g2", true)]
+	[TestCase("g2_b_b_a", "g2", true)]
+	public async Task GroupById_CanEditValue_ReflectsAccessLevel(string targetGroup, string accessScope, bool canEdit) { }
+
+	[Test] public async Task GroupSaveHandlerTest() { }
+	[Test] public async Task GroupSaveHandler_ThrowsIfInvalidParent() { }
+}
+"##;
+
+    let content_org_tree = r##"
+namespace Tmly.Test.Groups;
+public class OrgTreeTests {
+	[TestCase(AccessType.ManageUserAccess, "g1a g1b g1c")]
+	[TestCase(AccessType.AssignPayCodes, "g1 g2 g3")]
+	[TestCase(AccessType.ConfigureTimeEntry, "g3aa")]
+	public async Task DifferentAccessGetsRespectiveOrgTree(AccessType access, string expected) { }
+
+	[TestCase("a", "g1a g1aa g1ba g1ca g2a g3a g3aa")]
+	[TestCase("2", "g2 g2a")]
+	[TestCase("g1", "g1 g1a g1aa g1b g1ba g1c g1ca")]
+	[TestCase("g", "g1 g1a g1aa g1b g1ba g1c g1ca g2 g2a g3 g3a g3aa")]
+	[TestCase("", "g1 g1a g1aa g1b g1ba g1c g1ca g2 g2a g3 g3a g3aa")]
+	public async Task SearchThroughOrgList(string search, string expected) { }
+
+	[TestCase(AccessType.ManageUserAccess, "g1 g1a g1aa g1b g1ba g1c g1ca")]
+	[TestCase(AccessType.AssignPayCodes, "g1 g1a g1aa g1b g1ba g1c g1ca g2 g2a g3 g3a g3aa")]
+	[TestCase(AccessType.ConfigureTimeEntry, "g3a g3aa")]
+	public async Task OrgListAuthorizationTest(AccessType access, string expected) { }
+}
+"##;
+
+    parse_cs_content(content_gqh, "GQH", &mut methods, &mut classes);
+    parse_cs_content(content_group_tests, "Groups", &mut methods, &mut classes);
+    parse_cs_content(content_org_tree, "Org", &mut methods, &mut classes);
+
+    fn qc_is_class(qc: &str, simple: &str) -> bool {
+        qc == simple || qc.ends_with(&format!(".{}", simple))
+    }
+
+    // Count methods per class (qualified class name in source map)
+    let gqh_methods: Vec<_> = methods.iter().filter(|(_, vecs)| {
+        vecs.iter().any(|(_, qc)| qc_is_class(qc, "GroupQueryHandlerTest"))
+    }).collect();
+    let group_methods: Vec<_> = methods.iter().filter(|(_, vecs)| {
+        vecs.iter().any(|(_, qc)| qc_is_class(qc, "GroupTests"))
+    }).collect();
+    let org_methods: Vec<_> = methods.iter().filter(|(_, vecs)| {
+        vecs.iter().any(|(_, qc)| qc_is_class(qc, "OrgTreeTests"))
+    }).collect();
+
+    assert_eq!(gqh_methods.len(), 7, "GroupQueryHandlerTest should have 7 test methods");
+    assert_eq!(group_methods.len(), 3, "GroupTests should have 3 test methods");
+    assert_eq!(org_methods.len(), 3, "OrgTreeTests should have 3 test methods");
+}
+
+#[test]
+fn test_tree_test_count_for_parameterised_tests() {
+    use crate::core::tree::build_flat_tree;
+
+    // Simulate what discover_tests returns: (tree_fqn, filter_key, test_count)
+    // - SimpleTest has 1 instance (plain [Test])
+    // - ParamTest has 5 instances ([TestCase] x5)
+    // - AnotherTest has 3 instances
+    let tests = vec![
+        ("Folder.MyClass.SimpleTest".to_string(), "Ns.Folder.MyClass.SimpleTest".to_string(), 1),
+        ("Folder.MyClass.ParamTest".to_string(), "Ns.Folder.MyClass.ParamTest".to_string(), 5),
+        ("Folder.MyClass.AnotherTest".to_string(), "Ns.Folder.MyClass.AnotherTest".to_string(), 3),
+    ];
+
+    let tree = build_flat_tree(&tests);
+
+    // Should have: Folder (non-leaf) -> MyClass (non-leaf) -> 3 leaves
+    let leaves: Vec<_> = tree.iter().filter(|n| n.is_leaf).collect();
+    assert_eq!(leaves.len(), 3, "Should have 3 leaf nodes (one per method)");
+
+    // Total test_count across all leaves should be 1+5+3 = 9
+    let total: usize = leaves.iter().map(|n| n.test_count).sum();
+    assert_eq!(total, 9, "Total test_count should be 9 (sum of all parameterised variants)");
+
+    // Verify individual counts
+    let simple = leaves.iter().find(|n| n.label == "SimpleTest").unwrap();
+    assert_eq!(simple.test_count, 1);
+
+    let param = leaves.iter().find(|n| n.label == "ParamTest").unwrap();
+    assert_eq!(param.test_count, 5);
+
+    let another = leaves.iter().find(|n| n.label == "AnotherTest").unwrap();
+    assert_eq!(another.test_count, 3);
+
+    // Non-leaf nodes should have test_count = 0
+    let non_leaves: Vec<_> = tree.iter().filter(|n| !n.is_leaf).collect();
+    for node in &non_leaves {
+        assert_eq!(node.test_count, 0, "Non-leaf '{}' should have test_count=0", node.label);
     }
 }
