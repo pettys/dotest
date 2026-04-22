@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -27,7 +27,7 @@ use super::output::{kill_process, OutputEvent, spawn_test_run};
 pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -39,6 +39,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
     let mut output_rx: Option<mpsc::Receiver<OutputEvent>> = None;
     let mut is_running = false;
     let mut output_scroll: u16 = 0;
+    let mut output_follow_tail = true;
     let mut run_pid: Option<u32> = None;
     let mut run_start: Option<Instant> = None;
     let mut run_passed = 0;
@@ -141,10 +142,12 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         for i in 0..tree.len() {
             if !matches_query[i] { continue; }
             let mut hidden = false;
-            let mut curr = tree[i].parent_idx;
-            while let Some(p) = curr {
-                if !tree[p].is_expanded { hidden = true; break; }
-                curr = tree[p].parent_idx;
+            if query.is_empty() {
+                let mut curr = tree[i].parent_idx;
+                while let Some(p) = curr {
+                    if !tree[p].is_expanded { hidden = true; break; }
+                    curr = tree[p].parent_idx;
+                }
             }
             if !hidden { visible_indices.push(i); }
         }
@@ -161,6 +164,24 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         let total_count: usize = tree.iter().filter(|n| n.is_leaf).map(|n| n.test_count).sum();
 
         let has_output = !output_lines.is_empty();
+        let area = terminal.size()?;
+        let output_scroll_max = if has_output {
+            let constraints = vec![Constraint::Percentage(45), Constraint::Percentage(52), Constraint::Length(3)];
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints)
+                .split(area);
+            let output_height = chunks[1].height.saturating_sub(2) as usize;
+            output_lines.len().saturating_sub(output_height) as u16
+        } else {
+            0
+        };
+
+        if output_follow_tail {
+            output_scroll = output_scroll_max;
+        } else if output_scroll > output_scroll_max {
+            output_scroll = output_scroll_max;
+        }
 
         terminal.draw(|f| {
             let area = f.size();
@@ -209,9 +230,6 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             f.render_stateful_widget(list, chunks[0], &mut state);
 
             if has_output {
-                let output_height = chunks[1].height.saturating_sub(2) as usize;
-                output_scroll = output_lines.len().saturating_sub(output_height) as u16;
-
                 let output_text: Vec<Line> = output_lines.iter().map(|l| {
                     let style = if l.contains("Passed") || l.starts_with('✓') {
                         Style::default().fg(Color::Green)
@@ -227,10 +245,18 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
 
                 let output_title = if is_running {
                     let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
-                    format!(" Output (Running... {})  |  ✓:{}  ✗:{}  ⚠:{} ", elapsed, run_passed, run_failed, run_skipped)
+                    if output_follow_tail {
+                        format!(" Output (Running... {}) [follow]  |  ✓:{}  ✗:{}  ⚠:{} ", elapsed, run_passed, run_failed, run_skipped)
+                    } else {
+                        format!(" Output (Running... {}) [scroll]  |  ✓:{}  ✗:{}  ⚠:{} ", elapsed, run_passed, run_failed, run_skipped)
+                    }
                 } else {
                     let total = run_passed + run_failed + run_skipped;
-                    format!(" Output (Done - {} total)  |  ✓:{}  ✗:{}  ⚠:{} ", total, run_passed, run_failed, run_skipped)
+                    if output_follow_tail {
+                        format!(" Output (Done - {} total) [follow]  |  ✓:{}  ✗:{}  ⚠:{} ", total, run_passed, run_failed, run_skipped)
+                    } else {
+                        format!(" Output (Done - {} total) [scroll]  |  ✓:{}  ✗:{}  ⚠:{} ", total, run_passed, run_failed, run_skipped)
+                    }
                 };
 
                 let output_widget = Paragraph::new(output_text)
@@ -251,9 +277,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 format!(" Search: {}  |  Esc: clear  Enter: run  ?: help ", search_query)
             } else if is_running {
                 let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
-                format!(" Running... {}  |  Esc: cancel ", elapsed)
+                format!(" Running... {}  |  PgUp/PgDn/Home/End: output scroll  Esc: cancel ", elapsed)
             } else {
-                " Arrows: nav  Space: toggle  Enter: run  ?: help  Esc: quit ".to_string()
+                " Arrows: nav  Space: toggle  Enter: run  PgUp/PgDn/Home/End: output scroll  ?: help  Esc: quit ".to_string()
             };
 
             let help = Paragraph::new(help_text)
@@ -336,7 +362,24 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         })?;
 
         if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
+            match event::read()? {
+                Event::Mouse(mouse) => {
+                    if has_output {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                output_follow_tail = false;
+                                output_scroll = output_scroll.saturating_sub(3);
+                            }
+                            MouseEventKind::ScrollDown => {
+                                output_scroll = output_scroll.saturating_add(3).min(output_scroll_max);
+                                output_follow_tail = output_scroll >= output_scroll_max;
+                            }
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+                Event::Key(key) => {
                 if key.kind != KeyEventKind::Press { continue; }
 
                 if show_help {
@@ -378,15 +421,42 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 }
 
                 if is_running {
-                    if key.code == KeyCode::Esc {
-                        if let Some(pid) = run_pid.take() {
-                            kill_process(pid);
+                    match key.code {
+                        KeyCode::PageUp => {
+                            if has_output {
+                                output_follow_tail = false;
+                                output_scroll = output_scroll.saturating_sub(5);
+                            }
                         }
-                        is_running = false;
-                        let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
-                        output_lines.push(String::new());
-                        output_lines.push(format!("⚠ Cancelled ({})", elapsed));
-                        output_rx = None;
+                        KeyCode::PageDown => {
+                            if has_output {
+                                output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
+                                output_follow_tail = output_scroll >= output_scroll_max;
+                            }
+                        }
+                        KeyCode::Home => {
+                            if has_output {
+                                output_follow_tail = false;
+                                output_scroll = 0;
+                            }
+                        }
+                        KeyCode::End => {
+                            if has_output {
+                                output_follow_tail = true;
+                                output_scroll = output_scroll_max;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            if let Some(pid) = run_pid.take() {
+                                kill_process(pid);
+                            }
+                            is_running = false;
+                            let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
+                            output_lines.push(String::new());
+                            output_lines.push(format!("⚠ Cancelled ({})", elapsed));
+                            output_rx = None;
+                        }
+                        _ => {}
                     }
                     continue;
                 }
@@ -431,6 +501,30 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 }
 
                 match key.code {
+                    KeyCode::PageUp => {
+                        if has_output {
+                            output_follow_tail = false;
+                            output_scroll = output_scroll.saturating_sub(5);
+                        }
+                    }
+                    KeyCode::PageDown => {
+                        if has_output {
+                            output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
+                            output_follow_tail = output_scroll >= output_scroll_max;
+                        }
+                    }
+                    KeyCode::Home => {
+                        if has_output {
+                            output_follow_tail = false;
+                            output_scroll = 0;
+                        }
+                    }
+                    KeyCode::End => {
+                        if has_output {
+                            output_follow_tail = true;
+                            output_scroll = output_scroll_max;
+                        }
+                    }
                     KeyCode::Esc => {
                         if !search_query.is_empty() {
                             search_query.clear();
@@ -444,6 +538,8 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                         let filter = build_filter(tree);
                         if let Some(filter_str) = filter {
                             output_lines.clear();
+                            output_scroll = 0;
+                            output_follow_tail = true;
                             let sel_count: usize = tree.iter().filter(|n| n.is_leaf && n.is_selected).map(|n| n.test_count).sum();
                             output_lines.push(format!("━━━ Running {} selected tests... ━━━", sel_count));
                             if filter_str.is_empty() {
@@ -538,11 +634,13 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     _ => {}
                 }
             }
+                _ => {}
+            }
         }
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
     Ok(())
 }

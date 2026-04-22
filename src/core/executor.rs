@@ -50,23 +50,44 @@ pub(crate) fn build_discovery_entries(
 
     let mut per_line: Vec<Option<(String, String)>> = vec![None; display_names.len()];
 
-    for (short, mut group) in by_short {
+    for (short_and_class, mut group) in by_short {
         group.sort_by(|a, b| a.1.cmp(&b.1));
-        let cands = methods.get(&short).cloned().unwrap_or_default();
+        
+        // Try to match the display name (FQN) to a source method.
+        // The display name from dotnet test -t is usually Namespace.Class.Method
+        let parts: Vec<&str> = short_and_class.split('.').collect();
+        let method_name = *parts.last().unwrap_or(&short_and_class.as_str());
+        
+        let cands = methods.get(method_name).cloned().unwrap_or_default();
         if cands.is_empty() {
             continue;
         }
-        if cands.len() == 1 {
-            let (folder, qc) = cands[0].clone();
-            for (i, _) in group {
-                per_line[i] = Some((folder.clone(), qc.clone()));
+
+        // Filter candidates to those where the qualified class matches the FQN prefix.
+        let mut matching_cands = Vec::new();
+        if parts.len() > 1 {
+            let prefix = parts[..parts.len() - 1].join(".");
+            for (folder, qualified_class) in &cands {
+                if prefix == *qualified_class {
+                    matching_cands.push((folder.clone(), qualified_class.clone()));
+                }
             }
-            continue;
         }
-        let m = cands.len();
+
+        // Fallback: if no exact FQN match, but only one source method with this name, use it.
+        // If multiple candidates exist and the input is not qualified, use all candidates for round-robin.
+        let candidates_to_use = if !matching_cands.is_empty() {
+            matching_cands
+        } else if parts.len() == 1 || cands.len() == 1 {
+            cands
+        } else {
+            // Truly ambiguous (e.g. FQN provided but prefix doesn't match any source class)
+            continue;
+        };
+
+        let m = candidates_to_use.len();
         for (j, (i, _)) in group.iter().enumerate() {
-            let pick = cands[j % m].clone();
-            per_line[*i] = Some(pick);
+            per_line[*i] = Some(candidates_to_use[j % m].clone());
         }
     }
 
@@ -77,8 +98,9 @@ pub(crate) fn build_discovery_entries(
         let short = strip_params(dn);
         let (tree_fqn, fk) = match &per_line[i] {
             Some((folder, qc)) => {
-                let fk = qualified_filter_key(qc, &short);
-                let tree = tree_fqn_from_qualified(folder, qc, &short);
+                let simple_method = short.rsplit('.').next().unwrap_or(&short);
+                let fk = qualified_filter_key(qc, simple_method);
+                let tree = tree_fqn_from_qualified(folder, qc, simple_method);
                 (tree, fk)
             }
             None => {
@@ -219,8 +241,9 @@ pub(crate) fn enrich(
         // Scan segments to find a known class name and strip the namespace prefix.
         _ => {
             // Try to find a known class name among the segments.
+            // Search backwards to find the most specific (likely last) class name.
             let mut class_idx: Option<usize> = None;
-            for (i, &seg) in parts.iter().enumerate() {
+            for (i, &seg) in parts.iter().enumerate().rev() {
                 // Strip generics before class lookup
                 let base_seg = strip_params(seg);
                 if class_map.contains_key(&base_seg) {
@@ -234,14 +257,21 @@ pub(crate) fn enrich(
                 let folder = &class_map[&strip_params(parts[ci])];
                 if folder.is_empty() { suffix } else { format!("{}.{}", folder, suffix) }
             } else {
-                let last = *parts.last().unwrap();
+                let last = *parts.last().unwrap_or(&base);
                 let last_base = strip_params(last);
                 if let Some((folder, class)) = method_map.get(&last_base) {
+                    // If the method map gives us a class name, try to find it in the parts.
                     if let Some(ci) = parts.iter().position(|&s| strip_params(s) == class.as_str()) {
                         let suffix = parts[ci..].join(".");
                         if folder.is_empty() { suffix } else { format!("{}.{}", folder, suffix) }
                     } else if !folder.is_empty() {
-                        format!("{}.{}", folder, base)
+                        // If we can't find the class name but have a folder, at least prepend the folder.
+                        // But first check if the folder is already a prefix to avoid duplication.
+                        if base.starts_with(folder) {
+                            base.to_string()
+                        } else {
+                            format!("{}.{}", folder, base)
+                        }
                     } else {
                         base.to_string()
                     }
@@ -394,9 +424,9 @@ pub(crate) fn is_test_attribute(line: &str) -> bool {
     let trimmed = line.trim();
     if !trimmed.starts_with('[') || !trimmed.contains(']') { return false; }
     
-    // Extract the content inside the FIRST set of brackets
+    // Extract the content inside the FIRST set of brackets and trim it
     let end_bracket = trimmed.find(']').unwrap();
-    let content = &trimmed[1..end_bracket];
+    let content = trimmed[1..end_bracket].trim();
     
     // Check for any known test attribute keywords (case-insensitive for robustness)
     let lower = content.to_lowercase();
@@ -408,7 +438,7 @@ pub(crate) fn is_test_attribute(line: &str) -> bool {
     for kw in keywords {
         // Match the keyword either as the whole word or followed by a comma/paren 
         // (to handle [Test, Category("Slow")] or [TestCase(1)])
-        if lower == kw || lower.starts_with(&format!("{}(", kw)) || lower.starts_with(&format!("{},", kw)) {
+        if lower == kw || lower.starts_with(&format!("{}(", kw)) || lower.starts_with(&format!("{} (", kw)) || lower.starts_with(&format!("{},", kw)) {
             return true;
         }
     }

@@ -146,6 +146,11 @@ fn test_test_attributes() {
     assert!(is_test_attribute("[TestMethod]"));
     assert!(is_test_attribute("[DataRow(1)]"));
     
+    // Robustness: spaces inside brackets
+    assert!(is_test_attribute("[ Test]"));
+    assert!(is_test_attribute("[Test ]"));
+    assert!(is_test_attribute("[ TestCase(1) ]"));
+    
     // Safety
     assert!(!is_test_attribute("[Tast]")); // typo
     assert!(!is_test_attribute("Just text [Test]")); // not starting with [
@@ -514,4 +519,29 @@ fn test_tree_test_count_for_parameterised_tests() {
     for node in &non_leaves {
         assert_eq!(node.test_count, 0, "Non-leaf '{}' should have test_count=0", node.label);
     }
+}
+
+/// Tests the new FQN-aware matching logic in build_discovery_entries.
+/// This ensures that NUnit-style fully qualified display names are correctly matched to source
+/// methods even when namespaces are complex.
+#[test]
+fn test_build_discovery_fqn_aware_matching() {
+    let mut methods = HashMap::new();
+    // Source parsing found: Placement_Primary in Tmly.Test.Infrastructure.BaseQueryHelperTests
+    methods.insert(
+        "Placement_Primary".to_string(),
+        vec![("Infrastructure".to_string(), "Tmly.Test.Infrastructure.BaseQueryHelperTests".to_string())],
+    );
+    
+    // dotnet test -t returned the FQN
+    let display_names = vec![
+        "Tmly.Test.Infrastructure.BaseQueryHelperTests.Placement_Primary".to_string(),
+    ];
+    
+    let class_map = HashMap::new(); // Not needed for FQN match
+    let out = build_discovery_entries(&display_names, &methods, &class_map);
+    
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].0, "Infrastructure.BaseQueryHelperTests.Placement_Primary", "Should use correct folder-prefixed tree FQN");
+    assert_eq!(out[0].1, "Tmly.Test.Infrastructure.BaseQueryHelperTests.Placement_Primary", "Filter key should be the FQN");
 }
