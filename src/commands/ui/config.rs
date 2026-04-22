@@ -7,11 +7,23 @@ pub(super) enum Verbosity {
     Detailed,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub(super) enum OutputMode {
+    Split,
+    Fullscreen,
+}
+
+fn default_output_mode() -> OutputMode {
+    OutputMode::Split
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub(super) struct RunConfig {
     pub no_build: bool,
     pub verbosity: Verbosity,
     pub cache_tests: bool,
+    #[serde(default = "default_output_mode")]
+    pub output_mode: OutputMode,
 }
 
 impl Default for RunConfig {
@@ -20,6 +32,7 @@ impl Default for RunConfig {
             no_build: true,
             verbosity: Verbosity::Normal,
             cache_tests: false,
+            output_mode: OutputMode::Split,
         }
     }
 }

@@ -19,7 +19,7 @@ use ratatui::{
     Terminal,
 };
 
-use super::config::{RunConfig, Verbosity};
+use super::config::{OutputMode, RunConfig, Verbosity};
 use super::filter::{build_filter, sync_parents};
 use super::layout::{centered_rect, format_elapsed};
 use super::output::{kill_process, OutputEvent, spawn_test_run};
@@ -49,6 +49,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
     let mut show_config = false;
     let mut config_cursor: usize = 0;
     let mut show_help = false;
+    let mut show_output_fullscreen = false;
 
     loop {
         if let Some(ref rx) = output_rx {
@@ -164,14 +165,20 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         let total_count: usize = tree.iter().filter(|n| n.is_leaf).map(|n| n.test_count).sum();
 
         let has_output = !output_lines.is_empty();
+        let show_output_panel = has_output && (run_config.output_mode == OutputMode::Split || show_output_fullscreen);
         let area = terminal.size()?;
-        let output_scroll_max = if has_output {
-            let constraints = vec![Constraint::Percentage(45), Constraint::Percentage(52), Constraint::Length(3)];
+        let output_scroll_max = if show_output_panel {
+            let constraints = if show_output_fullscreen {
+                vec![Constraint::Min(0), Constraint::Length(3)]
+            } else {
+                vec![Constraint::Percentage(22), Constraint::Percentage(75), Constraint::Length(3)]
+            };
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints(constraints)
                 .split(area);
-            let output_height = chunks[1].height.saturating_sub(2) as usize;
+            let output_chunk_idx = if show_output_fullscreen { 0 } else { 1 };
+            let output_height = chunks[output_chunk_idx].height.saturating_sub(2) as usize;
             output_lines.len().saturating_sub(output_height) as u16
         } else {
             0
@@ -186,8 +193,10 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         terminal.draw(|f| {
             let area = f.size();
 
-            let constraints = if has_output {
-                vec![Constraint::Percentage(45), Constraint::Percentage(52), Constraint::Length(3)]
+            let constraints = if show_output_fullscreen {
+                vec![Constraint::Min(0), Constraint::Length(3)]
+            } else if show_output_panel {
+                vec![Constraint::Percentage(22), Constraint::Percentage(75), Constraint::Length(3)]
             } else {
                 vec![Constraint::Min(0), Constraint::Length(0), Constraint::Length(3)]
             };
@@ -224,12 +233,14 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 items.push(ListItem::new(Line::from(Span::styled(display_str, style))));
             }
 
-            let title = format!(" Tests ({}/{}) ", selected_count, total_count);
-            let list = List::new(items)
-                .block(Block::default().title(title).borders(Borders::ALL));
-            f.render_stateful_widget(list, chunks[0], &mut state);
+            if !show_output_fullscreen {
+                let title = format!(" Tests ({}/{}) ", selected_count, total_count);
+                let list = List::new(items)
+                    .block(Block::default().title(title).borders(Borders::ALL));
+                f.render_stateful_widget(list, chunks[0], &mut state);
+            }
 
-            if has_output {
+            if show_output_panel {
                 let output_text: Vec<Line> = output_lines.iter().map(|l| {
                     let style = if l.contains("Passed") || l.starts_with('✓') {
                         Style::default().fg(Color::Green)
@@ -259,6 +270,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     }
                 };
 
+                let output_chunk_idx = if show_output_fullscreen { 0 } else { 1 };
                 let output_widget = Paragraph::new(output_text)
                     .block(Block::default()
                         .title(output_title)
@@ -270,10 +282,15 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                         }))
                     .wrap(Wrap { trim: false })
                     .scroll((output_scroll, 0));
-                f.render_widget(output_widget, chunks[1]);
+                f.render_widget(output_widget, chunks[output_chunk_idx]);
             }
 
-            let help_text = if !search_query.is_empty() {
+            let help_text = if show_output_fullscreen && is_running {
+                let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
+                format!(" Fullscreen output... {}  |  PgUp/PgDn/Home/End/mouse: scroll  Esc: cancel run ", elapsed)
+            } else if show_output_fullscreen {
+                " Fullscreen output  |  PgUp/PgDn/Home/End/mouse: scroll  Esc: back to tree ".to_string()
+            } else if !search_query.is_empty() {
                 format!(" Search: {}  |  Esc: clear  Enter: run  ?: help ", search_query)
             } else if is_running {
                 let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
@@ -289,10 +306,11 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     else { Color::DarkGray }
                 ))
                 .block(Block::default().borders(Borders::ALL));
-            f.render_widget(help, chunks[2]);
+            let help_chunk_idx = if show_output_fullscreen { 1 } else { 2 };
+            f.render_widget(help, chunks[help_chunk_idx]);
 
             if show_config {
-                let popup = centered_rect(54, 10, area);
+                let popup = centered_rect(54, 12, area);
                 f.render_widget(Clear, popup);
 
                 let config_items = vec![
@@ -301,6 +319,8 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     format!("  {} Verbose (Detailed)", if run_config.verbosity == Verbosity::Detailed { "(*)" } else { "( )" }),
                     format!("  {} Verbose (Minimal)", if run_config.verbosity == Verbosity::Minimal { "(*)" } else { "( )" }),
                     format!("  {} Cache discovered tests", if run_config.cache_tests { "[x]" } else { "[ ]" }),
+                    format!("  {} Output mode: Split (~75% output)", if run_config.output_mode == OutputMode::Split { "(*)" } else { "( )" }),
+                    format!("  {} Output mode: Fullscreen on run", if run_config.output_mode == OutputMode::Fullscreen { "(*)" } else { "( )" }),
                 ];
 
                 let mut config_lines: Vec<Line> = Vec::new();
@@ -344,6 +364,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     Line::from("  Ctrl+A    : Toggle entirely all visible tests"),
                     Line::from("  Enter     : Run selected tests"),
                     Line::from("  Esc       : Cancel a running test execution"),
+                    Line::from("  Esc       : Exit fullscreen output when run is finished"),
                     Line::from(""),
                     Line::from(Span::styled(" Tool Options", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
                     Line::from("  Ctrl+P    : Open Settings/Configuration"),
@@ -364,7 +385,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         if event::poll(std::time::Duration::from_millis(50))? {
             match event::read()? {
                 Event::Mouse(mouse) => {
-                    if has_output {
+                    if show_output_panel {
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
                                 output_follow_tail = false;
@@ -397,7 +418,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             run_config.save();
                         }
                         KeyCode::Up => { if config_cursor > 0 { config_cursor -= 1; } }
-                        KeyCode::Down => { if config_cursor < 4 { config_cursor += 1; } }
+                        KeyCode::Down => { if config_cursor < 6 { config_cursor += 1; } }
                         KeyCode::Char(' ') => {
                             match config_cursor {
                                 0 => run_config.no_build = !run_config.no_build,
@@ -412,6 +433,8 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                         super::discover_and_cache().ok();
                                     }
                                 }
+                                5 => run_config.output_mode = OutputMode::Split,
+                                6 => run_config.output_mode = OutputMode::Fullscreen,
                                 _ => {}
                             }
                         }
@@ -423,25 +446,25 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 if is_running {
                     match key.code {
                         KeyCode::PageUp => {
-                            if has_output {
+                            if show_output_panel {
                                 output_follow_tail = false;
                                 output_scroll = output_scroll.saturating_sub(5);
                             }
                         }
                         KeyCode::PageDown => {
-                            if has_output {
+                            if show_output_panel {
                                 output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
                                 output_follow_tail = output_scroll >= output_scroll_max;
                             }
                         }
                         KeyCode::Home => {
-                            if has_output {
+                            if show_output_panel {
                                 output_follow_tail = false;
                                 output_scroll = 0;
                             }
                         }
                         KeyCode::End => {
-                            if has_output {
+                            if show_output_panel {
                                 output_follow_tail = true;
                                 output_scroll = output_scroll_max;
                             }
@@ -455,6 +478,40 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             output_lines.push(String::new());
                             output_lines.push(format!("⚠ Cancelled ({})", elapsed));
                             output_rx = None;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if show_output_fullscreen {
+                    match key.code {
+                        KeyCode::PageUp => {
+                            if show_output_panel {
+                                output_follow_tail = false;
+                                output_scroll = output_scroll.saturating_sub(5);
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            if show_output_panel {
+                                output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
+                                output_follow_tail = output_scroll >= output_scroll_max;
+                            }
+                        }
+                        KeyCode::Home => {
+                            if show_output_panel {
+                                output_follow_tail = false;
+                                output_scroll = 0;
+                            }
+                        }
+                        KeyCode::End => {
+                            if show_output_panel {
+                                output_follow_tail = true;
+                                output_scroll = output_scroll_max;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            show_output_fullscreen = false;
                         }
                         _ => {}
                     }
@@ -502,25 +559,25 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
 
                 match key.code {
                     KeyCode::PageUp => {
-                        if has_output {
+                        if show_output_panel {
                             output_follow_tail = false;
                             output_scroll = output_scroll.saturating_sub(5);
                         }
                     }
                     KeyCode::PageDown => {
-                        if has_output {
+                        if show_output_panel {
                             output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
                             output_follow_tail = output_scroll >= output_scroll_max;
                         }
                     }
                     KeyCode::Home => {
-                        if has_output {
+                        if show_output_panel {
                             output_follow_tail = false;
                             output_scroll = 0;
                         }
                     }
                     KeyCode::End => {
-                        if has_output {
+                        if show_output_panel {
                             output_follow_tail = true;
                             output_scroll = output_scroll_max;
                         }
@@ -537,6 +594,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     KeyCode::Enter => {
                         let filter = build_filter(tree);
                         if let Some(filter_str) = filter {
+                            show_output_fullscreen = run_config.output_mode == OutputMode::Fullscreen;
                             output_lines.clear();
                             output_scroll = 0;
                             output_follow_tail = true;
