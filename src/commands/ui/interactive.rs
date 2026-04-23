@@ -25,7 +25,7 @@ use ratatui::{
 
 use super::config::{OutputMode, RunConfig, Verbosity};
 use super::filter::{build_filter, sync_parents};
-use super::layout::{centered_rect, format_elapsed};
+use super::layout::{centered_rect, format_elapsed, output_wrapped_scroll_max, styled_output_lines};
 use super::output::{kill_process, OutputEvent, spawn_test_run};
 
 #[derive(Clone, Debug, Default)]
@@ -399,8 +399,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 .constraints(constraints)
                 .split(area);
             let output_chunk_idx = if show_output_fullscreen { 0 } else { 1 };
-            let output_height = chunks[output_chunk_idx].height.saturating_sub(2) as usize;
-            output_lines.len().saturating_sub(output_height) as u16
+            let inner_w = chunks[output_chunk_idx].width.saturating_sub(2);
+            let inner_h = chunks[output_chunk_idx].height.saturating_sub(2);
+            output_wrapped_scroll_max(&output_lines, inner_w, inner_h)
         } else {
             0
         };
@@ -462,18 +463,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             }
 
             if show_output_panel {
-                let output_text: Vec<Line> = output_lines.iter().map(|l| {
-                    let style = if l.contains("Passed") || l.starts_with('✓') {
-                        Style::default().fg(Color::Green)
-                    } else if l.contains("Failed") || l.starts_with('✗') {
-                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                    } else if l.contains("warning") {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::White)
-                    };
-                    Line::from(Span::styled(l.as_str(), style))
-                }).collect();
+                let output_text = styled_output_lines(&output_lines);
 
                 let output_title = if is_running {
                     let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
