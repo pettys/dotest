@@ -6,6 +6,7 @@ mod config;
 mod filter;
 mod interactive;
 mod layout;
+mod manual_watch;
 mod output;
 
 pub fn run() -> Result<()> {

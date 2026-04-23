@@ -3,8 +3,11 @@ use crate::core::executor::discover_tests;
 use crate::core::tree::{build_flat_tree, TreeNode};
 use arboard::Clipboard;
 use std::io;
+use std::path::Path;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use super::manual_watch::{start_manual_watch, ManualWatchHandle};
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
@@ -85,6 +88,94 @@ fn extract_failed_tests(lines: &[String]) -> Vec<FailedTestInfo> {
     failed
 }
 
+/// Strip VSTest parameter tail so `Name(a,b)` can be used in `FullyQualifiedName~` filters.
+fn filter_key_for_vstest(name: &str) -> String {
+    name.split('(').next().unwrap_or(name).trim().to_string()
+}
+
+fn build_filter_for_display_names(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| {
+            let k = filter_key_for_vstest(n);
+            format!("FullyQualifiedName~{k}")
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn apply_manual_watch_config(
+    root: &Path,
+    run_config: &RunConfig,
+    handle: &mut Option<ManualWatchHandle>,
+) {
+    if let Some(h) = handle.take() {
+        h.stop();
+    }
+    if !run_config.manual_watch_enabled {
+        return;
+    }
+    let delay = Duration::from_millis(run_config.manual_watch_delay_ms as u64);
+    match start_manual_watch(root.to_path_buf(), delay) {
+        Ok(h) => *handle = Some(h),
+        Err(e) => {
+            eprintln!("Could not start manual watch: {e}");
+        }
+    }
+}
+
+/// Shared by Enter, manual watch, and failed-test reruns. `filter` is the
+/// `FullyQualifiedName~…` string from `build_filter` (empty = run all).
+#[allow(clippy::too_many_arguments)]
+fn launch_filtered_test_run(
+    filter: String,
+    heading: &str,
+    run_config: &RunConfig,
+    output_lines: &mut Vec<String>,
+    output_rx: &mut Option<mpsc::Receiver<OutputEvent>>,
+    output_scroll: &mut u16,
+    output_follow_tail: &mut bool,
+    run_pid: &mut Option<u32>,
+    run_start: &mut Option<Instant>,
+    run_passed: &mut usize,
+    run_failed: &mut usize,
+    run_skipped: &mut usize,
+    failed_tests: &mut Vec<FailedTestInfo>,
+    show_failure_summary: &mut bool,
+    failed_selection: &mut usize,
+    failed_detail_scroll: &mut u16,
+    is_running: &mut bool,
+    show_output_fullscreen: &mut bool,
+) {
+    *show_output_fullscreen = run_config.output_mode == OutputMode::Fullscreen;
+    output_lines.clear();
+    *output_scroll = 0;
+    *output_follow_tail = true;
+    output_lines.push(heading.to_string());
+    if filter.is_empty() {
+        output_lines.push("  (all selected tests, no name filter)".to_string());
+    }
+    output_lines.push(String::new());
+    match spawn_test_run(Some(filter), run_config) {
+        Ok((rx, pid)) => {
+            *output_rx = Some(rx);
+            *run_pid = Some(pid);
+            *is_running = true;
+            *run_start = Some(Instant::now());
+            *run_passed = 0;
+            *run_failed = 0;
+            *run_skipped = 0;
+            failed_tests.clear();
+            *show_failure_summary = false;
+            *failed_selection = 0;
+            *failed_detail_scroll = 0;
+        }
+        Err(e) => {
+            output_lines.push(format!("Error: {e}"));
+        }
+    }
+}
+
 pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -112,9 +203,14 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
     let mut failed_detail_scroll: u16 = 0;
 
     let mut show_config = false;
+    // 0: skip build, 1: verbosity, 2: cache, 3: output, 4: manual watch, 5: debounce
     let mut config_cursor: usize = 0;
     let mut show_help = false;
     let mut show_output_fullscreen = false;
+
+    let root_dir = std::env::current_dir()?;
+    let mut manual_watch_handle: Option<ManualWatchHandle> = None;
+    apply_manual_watch_config(&root_dir, &run_config, &mut manual_watch_handle);
 
     loop {
         if let Some(ref rx) = output_rx {
@@ -188,6 +284,60 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             run_pid = None;
                         }
                         break;
+                    }
+                }
+            }
+        }
+
+        // Manual watch: after debounced `.cs` changes, re-run the same set as if you pressed Enter
+        if let Some(ref h) = manual_watch_handle {
+            let mut fired = false;
+            while h.rx.try_recv().is_ok() {
+                fired = true;
+            }
+            if fired
+                && run_config.manual_watch_enabled
+                && !is_running
+                && !show_config
+                && !show_help
+                && !show_failure_summary
+            {
+                let filter = build_filter(tree);
+                match filter {
+                    None => {
+                        output_lines.push(
+                            "👀 Manual watch: a `.cs` file changed, but no tests are checked. \
+                             Use Space to check tests, or turn off Manual watch in Settings (Ctrl+P)."
+                                .to_string(),
+                        );
+                    }
+                    Some(filter_str) => {
+                        let sel_count: usize = tree
+                            .iter()
+                            .filter(|n| n.is_leaf && n.is_selected)
+                            .map(|n| n.test_count)
+                            .sum();
+                        let heading = format!("━━━ Manual watch: re-running {sel_count} checked test(s)… ━━━");
+                        launch_filtered_test_run(
+                            filter_str,
+                            &heading,
+                            &run_config,
+                            &mut output_lines,
+                            &mut output_rx,
+                            &mut output_scroll,
+                            &mut output_follow_tail,
+                            &mut run_pid,
+                            &mut run_start,
+                            &mut run_passed,
+                            &mut run_failed,
+                            &mut run_skipped,
+                            &mut failed_tests,
+                            &mut show_failure_summary,
+                            &mut failed_selection,
+                            &mut failed_detail_scroll,
+                            &mut is_running,
+                            &mut show_output_fullscreen,
+                        );
                     }
                 }
             }
@@ -368,6 +518,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 format!(" Running... {}  |  PgUp/PgDn/Home/End: output scroll  Esc: cancel ", elapsed)
             } else {
                 let mut text = " Arrows: nav  Space: toggle  Enter: run  PgUp/PgDn/Home/End: output scroll ".to_string();
+                if run_config.manual_watch_enabled {
+                    text.push_str("  [manual watch] ");
+                }
                 if !failed_tests.is_empty() && run_failed > 0 {
                     text.push_str("  Ctrl+E: failed summary ");
                 }
@@ -386,34 +539,56 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             f.render_widget(help, chunks[help_chunk_idx]);
 
             if show_config {
-                let popup = centered_rect(54, 12, area);
+                let popup = centered_rect(64, 22, area);
                 f.render_widget(Clear, popup);
 
-                let config_items = vec![
-                    format!("  {} Skip build (--no-build)", if run_config.no_build { "[x]" } else { "[ ]" }),
-                    format!("  {} Verbose (Normal)", if run_config.verbosity == Verbosity::Normal { "(*)" } else { "( )" }),
-                    format!("  {} Verbose (Detailed)", if run_config.verbosity == Verbosity::Detailed { "(*)" } else { "( )" }),
-                    format!("  {} Verbose (Minimal)", if run_config.verbosity == Verbosity::Minimal { "(*)" } else { "( )" }),
-                    format!("  {} Cache discovered tests", if run_config.cache_tests { "[x]" } else { "[ ]" }),
-                    format!("  {} Output mode: Split (~75% output)", if run_config.output_mode == OutputMode::Split { "(*)" } else { "( )" }),
-                    format!("  {} Output mode: Fullscreen on run", if run_config.output_mode == OutputMode::Fullscreen { "(*)" } else { "( )" }),
-                ];
+                let v_label = match run_config.verbosity {
+                    Verbosity::Normal => "Normal",
+                    Verbosity::Detailed => "Detailed",
+                    Verbosity::Minimal => "Minimal",
+                };
+                let out_label = match run_config.output_mode {
+                    OutputMode::Split => "Split (tree + output)",
+                    OutputMode::Fullscreen => "Fullscreen when running",
+                };
+                let mw = if run_config.manual_watch_enabled { "on " } else { "off" };
+                let d = run_config.manual_watch_delay_ms;
 
-                let mut config_lines: Vec<Line> = Vec::new();
-                config_lines.push(Line::from(""));
-                for (i, item) in config_items.iter().enumerate() {
+                let mut config_lines: Vec<Line> = vec![
+                    Line::from(""),
+                    Line::from(Span::styled(" Build & output ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                ];
+                let line_strings = vec![
+                    format!(
+                        "  {}  Skip build  (--no-build)",
+                        if run_config.no_build { "[x]" } else { "[ ]" }
+                    ),
+                    format!("  [∙]  Log verbosity:  {v_label}  (Space: cycle)"),
+                    format!(
+                        "  {}  Cache discovered tests  (F5 refresh)",
+                        if run_config.cache_tests { "[x]" } else { "[ ]" }
+                    ),
+                    format!("  [∙]  Output:  {out_label}  (Space: toggle)"),
+                    format!(
+                        "  {}  Manual watch:  {mw} — re-runs only checked tests on `.cs` changes",
+                        if run_config.manual_watch_enabled { "[x]" } else { "[ ]" }
+                    ),
+                    format!("  [∙]  Watch debounce:  {d} ms   ←/→: ±200  (applies to manual watch)"),
+                ];
+                for (i, line) in line_strings.iter().enumerate() {
                     let style = if i == config_cursor {
                         Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::White)
                     };
-                    config_lines.push(Line::from(Span::styled(item.as_str(), style)));
+                    config_lines.push(Line::from(Span::styled(line.as_str(), style)));
                 }
                 config_lines.push(Line::from(""));
                 config_lines.push(Line::from(Span::styled(
-                    "  Space: toggle  |  Esc/Enter: close & save",
+                    "  ↑/↓: move   Space: change row   ←/→: debounce 200 ms (row 5)   Esc / Enter: save & close",
                     Style::default().fg(Color::DarkGray),
                 )));
+                config_lines.push(Line::from(""));
 
                 let config_widget = Paragraph::new(config_lines)
                     .block(Block::default()
@@ -439,13 +614,18 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     Line::from("  Space     : Toggle selection for hovered test/folder"),
                     Line::from("  Ctrl+A    : Toggle entirely all visible tests"),
                     Line::from("  Ctrl+E    : Open failed tests summary (after a failed run)"),
-                    Line::from("  Enter     : Run selected tests"),
+                    Line::from("  Ctrl+P    : Settings: manual watch, debounce, output, etc."),
+                    Line::from("  Enter     : Run selected (checked) tests"),
                     Line::from("  Esc       : Cancel a running test execution"),
                     Line::from("  Esc       : Exit fullscreen output when run is finished"),
                     Line::from(""),
                     Line::from(Span::styled(" Tool Options", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                    Line::from("  Ctrl+P    : Open Settings/Configuration"),
                     Line::from("  F5        : Rediscover and refresh test list"),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        " Manual watch: enable in Settings. When on, checked tests re-run on `.cs` saves.",
+                        Style::default().fg(Color::DarkGray),
+                    )),
                     Line::from(""),
                     Line::from(Span::styled("  Esc/Enter to close this help window", Style::default().fg(Color::DarkGray))),
                 ];
@@ -554,7 +734,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 f.render_widget(detail_widget, body[1]);
 
                 let footer = Paragraph::new(
-                    " ↑/↓: select failed test  PgUp/PgDn/Home/End: scroll details  c: copy all names  Esc: close ",
+                    " ↑/↓: select  PgUp-Dn/scroll  c: copy names  d: copy error  r: re-run 1  R: re-run all  Esc: close ",
                 )
                 .style(Style::default().fg(Color::Red));
                 f.render_widget(footer, inner[1]);
@@ -644,26 +824,126 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                 }
                             }
                         }
+                        KeyCode::Char('d') | KeyCode::Char('m') => {
+                            if !failed_tests.is_empty() {
+                                let f = &failed_tests[failed_selection.min(failed_tests.len().saturating_sub(1))];
+                                let mut s = f.name.clone();
+                                if !f.details.is_empty() {
+                                    s.push('\n');
+                                    s.push_str(&f.details.join("\n"));
+                                }
+                                match Clipboard::new().and_then(|mut c| c.set_text(s)) {
+                                    Ok(()) => output_lines
+                                        .push("✓ Copied selected failure (name + message) to clipboard.".to_string()),
+                                    Err(_) => output_lines
+                                        .push("✗ Could not copy to clipboard.".to_string()),
+                                }
+                            }
+                        }
+                        KeyCode::Char('r') => {
+                            if !is_running && !failed_tests.is_empty() {
+                                let f = &failed_tests[failed_selection.min(failed_tests.len().saturating_sub(1))];
+                                let fk = build_filter_for_display_names(&[filter_key_for_vstest(&f.name)]);
+                                show_failure_summary = false;
+                                launch_filtered_test_run(
+                                    fk,
+                                    "━━━ Re-running 1 failed test… ━━━",
+                                    &run_config,
+                                    &mut output_lines,
+                                    &mut output_rx,
+                                    &mut output_scroll,
+                                    &mut output_follow_tail,
+                                    &mut run_pid,
+                                    &mut run_start,
+                                    &mut run_passed,
+                                    &mut run_failed,
+                                    &mut run_skipped,
+                                    &mut failed_tests,
+                                    &mut show_failure_summary,
+                                    &mut failed_selection,
+                                    &mut failed_detail_scroll,
+                                    &mut is_running,
+                                    &mut show_output_fullscreen,
+                                );
+                            }
+                        }
+                        KeyCode::Char('R') => {
+                            if !is_running && !failed_tests.is_empty() {
+                                let names: Vec<String> = failed_tests.iter().map(|f| f.name.clone()).collect();
+                                let n = names.len();
+                                let fk = build_filter_for_display_names(&names);
+                                show_failure_summary = false;
+                                launch_filtered_test_run(
+                                    fk,
+                                    &format!("━━━ Re-running {n} failed test(s)… ━━━"),
+                                    &run_config,
+                                    &mut output_lines,
+                                    &mut output_rx,
+                                    &mut output_scroll,
+                                    &mut output_follow_tail,
+                                    &mut run_pid,
+                                    &mut run_start,
+                                    &mut run_passed,
+                                    &mut run_failed,
+                                    &mut run_skipped,
+                                    &mut failed_tests,
+                                    &mut show_failure_summary,
+                                    &mut failed_selection,
+                                    &mut failed_detail_scroll,
+                                    &mut is_running,
+                                    &mut show_output_fullscreen,
+                                );
+                            }
+                        }
                         _ => {}
                     }
                     continue;
                 }
 
                 if show_config {
+                    let debounce_clamp = |v: u32| v.clamp(200, 20_000);
                     match key.code {
                         KeyCode::Esc | KeyCode::Enter => {
                             show_config = false;
+                            run_config.manual_watch_delay_ms = debounce_clamp(run_config.manual_watch_delay_ms);
                             run_config.save();
+                            apply_manual_watch_config(&root_dir, &run_config, &mut manual_watch_handle);
                         }
-                        KeyCode::Up => { if config_cursor > 0 { config_cursor -= 1; } }
-                        KeyCode::Down => { if config_cursor < 6 { config_cursor += 1; } }
+                        KeyCode::Up => {
+                            if config_cursor > 0 {
+                                config_cursor -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if config_cursor < 5 {
+                                config_cursor += 1;
+                            }
+                        }
+                        KeyCode::Left => {
+                            if config_cursor == 5 {
+                                run_config.manual_watch_delay_ms = debounce_clamp(
+                                    run_config.manual_watch_delay_ms.saturating_sub(200),
+                                );
+                            }
+                        }
+                        KeyCode::Right => {
+                            if config_cursor == 5 {
+                                run_config.manual_watch_delay_ms = debounce_clamp(
+                                    (run_config.manual_watch_delay_ms + 200).min(20_000),
+                                );
+                            }
+                        }
                         KeyCode::Char(' ') => {
                             match config_cursor {
                                 0 => run_config.no_build = !run_config.no_build,
-                                1 => run_config.verbosity = Verbosity::Normal,
-                                2 => run_config.verbosity = Verbosity::Detailed,
-                                3 => run_config.verbosity = Verbosity::Minimal,
-                                4 => {
+                                1 => {
+                                    run_config.verbosity = match run_config.verbosity {
+                                        Verbosity::Normal => Verbosity::Detailed,
+                                        Verbosity::Detailed => Verbosity::Minimal,
+                                        Verbosity::Minimal => Verbosity::Normal,
+                                    };
+                                }
+                                2 => {
                                     run_config.cache_tests = !run_config.cache_tests;
                                     if !run_config.cache_tests {
                                         let _ = std::fs::remove_file(".dotest_cache.json");
@@ -671,8 +951,23 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                         super::discover_and_cache().ok();
                                     }
                                 }
-                                5 => run_config.output_mode = OutputMode::Split,
-                                6 => run_config.output_mode = OutputMode::Fullscreen,
+                                3 => {
+                                    run_config.output_mode = if run_config.output_mode == OutputMode::Split {
+                                        OutputMode::Fullscreen
+                                    } else {
+                                        OutputMode::Split
+                                    };
+                                }
+                                4 => {
+                                    run_config.manual_watch_enabled = !run_config.manual_watch_enabled;
+                                    run_config.manual_watch_delay_ms = debounce_clamp(run_config.manual_watch_delay_ms);
+                                    apply_manual_watch_config(
+                                        &root_dir,
+                                        &run_config,
+                                        &mut manual_watch_handle,
+                                    );
+                                }
+                                5 => {}
                                 _ => {}
                             }
                         }
@@ -841,34 +1136,32 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     KeyCode::Enter => {
                         let filter = build_filter(tree);
                         if let Some(filter_str) = filter {
-                            show_output_fullscreen = run_config.output_mode == OutputMode::Fullscreen;
-                            output_lines.clear();
-                            output_scroll = 0;
-                            output_follow_tail = true;
-                            let sel_count: usize = tree.iter().filter(|n| n.is_leaf && n.is_selected).map(|n| n.test_count).sum();
-                            output_lines.push(format!("━━━ Running {} selected tests... ━━━", sel_count));
-                            if filter_str.is_empty() {
-                                output_lines.push("  (all tests, no filter)".to_string());
-                            }
-                            output_lines.push(String::new());
-                            match spawn_test_run(Some(filter_str), &run_config) {
-                                Ok((rx, pid)) => {
-                                    output_rx = Some(rx);
-                                    run_pid = Some(pid);
-                                    is_running = true;
-                                    run_start = Some(Instant::now());
-                                    run_passed = 0;
-                                    run_failed = 0;
-                                    run_skipped = 0;
-                                    failed_tests.clear();
-                                    show_failure_summary = false;
-                                    failed_selection = 0;
-                                    failed_detail_scroll = 0;
-                                }
-                                Err(e) => {
-                                    output_lines.push(format!("Error: {}", e));
-                                }
-                            }
+                            let sel_count: usize = tree
+                                .iter()
+                                .filter(|n| n.is_leaf && n.is_selected)
+                                .map(|n| n.test_count)
+                                .sum();
+                            let heading = format!("━━━ Running {sel_count} selected test(s)… ━━━");
+                            launch_filtered_test_run(
+                                filter_str,
+                                &heading,
+                                &run_config,
+                                &mut output_lines,
+                                &mut output_rx,
+                                &mut output_scroll,
+                                &mut output_follow_tail,
+                                &mut run_pid,
+                                &mut run_start,
+                                &mut run_passed,
+                                &mut run_failed,
+                                &mut run_skipped,
+                                &mut failed_tests,
+                                &mut show_failure_summary,
+                                &mut failed_selection,
+                                &mut failed_detail_scroll,
+                                &mut is_running,
+                                &mut show_output_fullscreen,
+                            );
                         }
                     }
 
@@ -948,6 +1241,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         }
     }
 
+    if let Some(h) = manual_watch_handle {
+        h.stop();
+    }
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
