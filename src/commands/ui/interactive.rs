@@ -496,20 +496,37 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 f.render_widget(output_widget, chunks[output_chunk_idx]);
             }
 
+            let watch_hint = if run_config.manual_watch_enabled {
+                "  ● WATCH ON "
+            } else {
+                ""
+            };
             let help_text = if show_output_fullscreen && is_running {
                 let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
-                format!(" Fullscreen output... {}  |  PgUp/PgDn/Home/End/mouse: scroll  Esc: cancel run ", elapsed)
+                format!(
+                    " Fullscreen output... {}  |  PgUp/PgDn/Home/End/mouse: scroll  Esc: cancel run{}",
+                    elapsed, watch_hint
+                )
             } else if show_output_fullscreen {
-                " Fullscreen output  |  PgUp/PgDn/Home/End/mouse: scroll  Esc: back to tree ".to_string()
+                format!(
+                    " Fullscreen output  |  PgUp/PgDn/Home/End/mouse: scroll  Esc: back to tree{}",
+                    watch_hint
+                )
             } else if !search_query.is_empty() {
-                format!(" Search: {}  |  Esc: clear  Enter: run  ?: help ", search_query)
+                format!(
+                    " Search: {}  |  Esc: clear  Enter: run  ?: help{}",
+                    search_query, watch_hint
+                )
             } else if is_running {
                 let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
-                format!(" Running... {}  |  PgUp/PgDn/Home/End: output scroll  Esc: cancel ", elapsed)
+                format!(
+                    " Running... {}  |  PgUp/PgDn/Home/End: output scroll  Esc: cancel{}",
+                    elapsed, watch_hint
+                )
             } else {
                 let mut text = " Arrows: nav  Space: toggle  Enter: run  PgUp/PgDn/Home/End: output scroll ".to_string();
                 if run_config.manual_watch_enabled {
-                    text.push_str("  [manual watch] ");
+                    text.push_str(watch_hint);
                 }
                 if !failed_tests.is_empty() && run_failed > 0 {
                     text.push_str("  Ctrl+E: failed summary ");
@@ -529,7 +546,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             f.render_widget(help, chunks[help_chunk_idx]);
 
             if show_config {
-                let popup = centered_rect(64, 23, area);
+                let popup = centered_rect(64, 22, area);
                 f.render_widget(Clear, popup);
 
                 let v_label = match run_config.verbosity {
@@ -558,10 +575,6 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                         if run_config.no_restore { "[x]" } else { "[ ]" }
                     ),
                     format!("  [∙]  Log verbosity:  {v_label}  (Space: cycle)"),
-                    format!(
-                        "  {}  Cache discovered tests  (F5 refresh)",
-                        if run_config.cache_tests { "[x]" } else { "[ ]" }
-                    ),
                     format!("  [∙]  Output:  {out_label}  (Space: toggle)"),
                     format!(
                         "  {}  Manual watch:  {mw} — re-runs only checked tests on `.cs` changes",
@@ -579,7 +592,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 }
                 config_lines.push(Line::from(""));
                 config_lines.push(Line::from(Span::styled(
-                    "  ↑/↓: move   Space: change row   ←/→: debounce 200 ms (row 6)   Esc / Enter: save & close",
+                    "  ↑/↓: move   Space: change row   ←/→: debounce 200 ms (row 5)   Esc / Enter: save & close",
                     Style::default().fg(Color::DarkGray),
                 )));
                 config_lines.push(Line::from(""));
@@ -593,35 +606,45 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             }
 
             if show_help {
-                let popup = centered_rect(60, 20, area);
+                let popup = centered_rect(62, 26, area);
                 f.render_widget(Clear, popup);
 
                 let help_lines = vec![
                     Line::from(Span::styled(" Navigation", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                    Line::from("  ↑/↓       : Move selection"),
-                    Line::from("  ←/→       : Expand/Collapse directories"),
-                    Line::from("  a-z/0-9   : Type to search"),
-                    Line::from("  Backspace : Delete search character"),
-                    Line::from("  Esc       : Clear search"),
+                    Line::from("  ↑/↓       : Move selection in the test tree"),
+                    Line::from("  ←/→       : Collapse / expand folders"),
+                    Line::from("  a-z/0-9   : Type to filter (search) the tree"),
+                    Line::from("  Backspace : Delete last search character"),
+                    Line::from("  Esc       : Clear search, or quit if search is empty"),
                     Line::from(""),
-                    Line::from(Span::styled(" Execution & Toggles", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                    Line::from("  Space     : Toggle selection for hovered test/folder"),
-                    Line::from("  Ctrl+A    : Toggle entirely all visible tests"),
-                    Line::from("  Ctrl+E    : Open failed tests summary (after a failed run)"),
-                    Line::from("  Ctrl+P    : Settings: manual watch, debounce, output, etc."),
-                    Line::from("  Enter     : Run selected (checked) tests"),
-                    Line::from("  Esc       : Cancel a running test execution"),
-                    Line::from("  Esc       : Exit fullscreen output when run is finished"),
+                    Line::from(Span::styled(" Running & output", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                    Line::from("  Enter     : Run all checked tests"),
+                    Line::from("  Esc       : Cancel a run in progress, or leave fullscreen output"),
+                    Line::from("  PgUp/Dn, Home, End : Scroll the output pane (when visible)"),
+                    Line::from("  Mouse wheel : Scroll output when the output panel is focused"),
+                    Line::from("  Output title shows [follow] (tail) vs [scroll] (manual)"),
                     Line::from(""),
-                    Line::from(Span::styled(" Tool Options", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                    Line::from("  F5        : Rediscover and refresh test list"),
+                    Line::from(Span::styled(" Toggles & shortcuts", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                    Line::from("  Space     : Toggle checkmark on test or folder branch"),
+                    Line::from("  Ctrl+A    : Toggle all visible tests (select all or clear all)"),
+                    Line::from("  Ctrl+W    : Toggle manual watch on/off (saved). ● WATCH ON in status when active"),
+                    Line::from("  Ctrl+P    : Settings (verbosity, output mode, watch debounce, …)"),
+                    Line::from("  Ctrl+E    : Failed tests summary (after a run with failures)"),
                     Line::from(""),
-                    Line::from(Span::styled(
-                        " Manual watch: enable in Settings. When on, checked tests re-run on `.cs` saves.",
-                        Style::default().fg(Color::DarkGray),
-                    )),
+                    Line::from(Span::styled(" Tool & discovery", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                    Line::from("  F1 / ?    : Open this help"),
+                    Line::from("  F5        : Rediscover tests and refresh the tree (updates the on-disk list)"),
+                    Line::from("  Startup   : Skips discovery when `.dotest_cache.json` matches repo/file fingerprint"),
                     Line::from(""),
-                    Line::from(Span::styled("  Esc/Enter to close this help window", Style::default().fg(Color::DarkGray))),
+                    Line::from(Span::styled(" Manual watch", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                    Line::from("  When ON, saving a `.cs` file re-runs only the tests you have checked."),
+                    Line::from("  Debounce delay is adjusted in Settings (Ctrl+P)."),
+                    Line::from(""),
+                    Line::from(Span::styled(" Failed summary (Ctrl+E)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+                    Line::from("  ↑/↓ PgUp/Dn : Move list & error details  |  c: copy names  d: copy details"),
+                    Line::from("  r : Re-run selected failed test  |  R : Re-run all failed  |  Esc: close"),
+                    Line::from(""),
+                    Line::from(Span::styled("  Esc or Enter closes this help window.", Style::default().fg(Color::DarkGray))),
                 ];
 
                 let help_widget = Paragraph::new(help_lines)
@@ -909,19 +932,19 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             }
                         }
                         KeyCode::Down => {
-                            if config_cursor < 6 {
+                            if config_cursor < 5 {
                                 config_cursor += 1;
                             }
                         }
                         KeyCode::Left => {
-                            if config_cursor == 6 {
+                            if config_cursor == 5 {
                                 run_config.manual_watch_delay_ms = debounce_clamp(
                                     run_config.manual_watch_delay_ms.saturating_sub(200),
                                 );
                             }
                         }
                         KeyCode::Right => {
-                            if config_cursor == 6 {
+                            if config_cursor == 5 {
                                 run_config.manual_watch_delay_ms = debounce_clamp(
                                     (run_config.manual_watch_delay_ms + 200).min(20_000),
                                 );
@@ -939,21 +962,13 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                     };
                                 }
                                 3 => {
-                                    run_config.cache_tests = !run_config.cache_tests;
-                                    if !run_config.cache_tests {
-                                        let _ = std::fs::remove_file(".dotest_cache.json");
-                                    } else {
-                                        super::discover_and_cache(run_config.no_restore).ok();
-                                    }
-                                }
-                                4 => {
                                     run_config.output_mode = if run_config.output_mode == OutputMode::Split {
                                         OutputMode::Fullscreen
                                     } else {
                                         OutputMode::Split
                                     };
                                 }
-                                5 => {
+                                4 => {
                                     run_config.manual_watch_enabled = !run_config.manual_watch_enabled;
                                     run_config.manual_watch_delay_ms = debounce_clamp(run_config.manual_watch_delay_ms);
                                     apply_manual_watch_config(
@@ -962,7 +977,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                         &mut manual_watch_handle,
                                     );
                                 }
-                                6 => {}
+                                5 => {}
                                 _ => {}
                             }
                         }
@@ -1068,16 +1083,27 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     continue;
                 }
 
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('w' | 'W'))
+                {
+                    run_config.manual_watch_enabled = !run_config.manual_watch_enabled;
+                    run_config.manual_watch_delay_ms = run_config.manual_watch_delay_ms.clamp(200, 20_000);
+                    apply_manual_watch_config(&root_dir, &run_config, &mut manual_watch_handle);
+                    run_config.save();
+                    if run_config.manual_watch_enabled {
+                        output_lines.push("✓ Manual watch ON — checked tests re-run when you save `.cs` files.".to_string());
+                    } else {
+                        output_lines.push("○ Manual watch OFF.".to_string());
+                    }
+                    continue;
+                }
+
                 if key.code == KeyCode::F(5) {
                     output_lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
                     output_lines.push("🔄 Rediscovering tests... please wait.".to_string());
 
                     if let Ok(tests) = discover_tests(true, run_config.no_restore) {
-                        if run_config.cache_tests {
-                            if let Ok(s) = serde_json::to_string(&tests) {
-                                let _ = std::fs::write(".dotest_cache.json", s);
-                            }
-                        }
+                        let _ = super::discovery_cache::save_discovery_cache(&tests);
                         *tree = build_flat_tree(&tests);
                         state.select(Some(0));
                         search_query.clear();

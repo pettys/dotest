@@ -1,6 +1,6 @@
 [package]
 name = "dotest"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 
@@ -16,3 +16,4 @@ crossterm = "0.27"
 serde_yaml = "0.9.34"
 arboard = "3"
 notify = "6.1"
+sha2 = "0.10"

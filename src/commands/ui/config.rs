@@ -32,7 +32,10 @@ pub(crate) struct RunConfig {
     #[serde(default = "default_no_restore")]
     pub no_restore: bool,
     pub verbosity: Verbosity,
-    pub cache_tests: bool,
+    /// Ignored; discovery list is cached automatically via workspace fingerprint. Kept so older `.dotest.yml` still deserialize.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    cache_tests: bool,
     #[serde(default = "default_output_mode")]
     pub output_mode: OutputMode,
     /// When set, a background watcher re-runs **only the tests you have checked in the tree**

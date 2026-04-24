@@ -542,7 +542,7 @@ fn collect_csproj(dir: &Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
 
 fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String>> {
     let mut cmd = Command::new("dotnet");
-    cmd.arg("test").arg("-t");
+    cmd.arg("test").arg("/p:UseSharedCompilation=true").arg("-t");
     if no_build { cmd.arg("--no-build"); }
     if no_restore { cmd.arg("--no-restore"); }
     let output = cmd.output().context("Failed to run dotnet test -t")?;
@@ -574,7 +574,7 @@ fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String
 /// Caller controls Stdio (piped vs inherited).
 pub fn build_test_command(filter: Option<String>, no_build: bool, no_restore: bool) -> Command {
     let mut cmd = Command::new("dotnet");
-    cmd.arg("test");
+    cmd.arg("test").arg("/p:UseSharedCompilation=true");
 
     let mut final_filter = filter;
     if let Ok(config) = Config::new() {
