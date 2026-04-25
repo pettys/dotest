@@ -245,6 +245,13 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                         }
 
                         output_lines.push(line);
+                        failed_tests = extract_failed_tests(&output_lines);
+                        if failed_tests.is_empty() {
+                            failed_selection = 0;
+                            failed_detail_scroll = 0;
+                        } else {
+                            failed_selection = failed_selection.min(failed_tests.len() - 1);
+                        }
                     }
                     Ok(OutputEvent::Finished(code)) => {
                         is_running = false;
@@ -504,7 +511,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             let help_text = if show_output_fullscreen && is_running {
                 let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
                 format!(
-                    " Fullscreen output... {}  |  PgUp/PgDn/Home/End/mouse: scroll  Esc: cancel run{}",
+                    " Fullscreen output... {}  |  PgUp/PgDn/Home/End/mouse: scroll  Ctrl+E: failed summary  Esc: cancel run{}",
                     elapsed, watch_hint
                 )
             } else if show_output_fullscreen {
@@ -520,7 +527,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             } else if is_running {
                 let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
                 format!(
-                    " Running... {}  |  PgUp/PgDn/Home/End: output scroll  Esc: cancel{}",
+                    " Running... {}  |  PgUp/PgDn/Home/End: output scroll  Ctrl+E: failed summary  Esc: cancel{}",
                     elapsed, watch_hint
                 )
             } else {
@@ -528,9 +535,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 if run_config.manual_watch_enabled {
                     text.push_str(watch_hint);
                 }
-                if !failed_tests.is_empty() && run_failed > 0 {
-                    text.push_str("  Ctrl+E: failed summary ");
-                }
+                text.push_str("  Ctrl+E: failed summary ");
                 text.push_str(" ?: help  Esc: quit ");
                 text
             };
@@ -629,7 +634,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     Line::from("  Ctrl+A    : Toggle all visible tests (select all or clear all)"),
                     Line::from("  Ctrl+W    : Toggle manual watch on/off (saved). ● WATCH ON in status when active"),
                     Line::from("  Ctrl+P    : Settings (verbosity, output mode, watch debounce, …)"),
-                    Line::from("  Ctrl+E    : Failed tests summary (after a run with failures)"),
+                    Line::from("  Ctrl+E    : Failed tests summary (opens immediately and fills as failures arrive)"),
                     Line::from(""),
                     Line::from(Span::styled(" Tool & discovery", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
                     Line::from("  F1 / ?    : Open this help"),
@@ -988,6 +993,16 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
 
                 if is_running {
                     match key.code {
+                        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            show_failure_summary = true;
+                            if failed_tests.is_empty() {
+                                
+                                failed_selection = 0;
+                            } else {
+                                failed_selection = failed_selection.min(failed_tests.len() - 1);
+                            }
+                            failed_detail_scroll = 0;
+                        }
                         KeyCode::PageUp => {
                             if show_output_panel {
                                 output_follow_tail = false;
@@ -1069,11 +1084,13 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 }
 
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('e') {
-                    if !failed_tests.is_empty() && run_failed > 0 {
-                        show_failure_summary = true;
+                    show_failure_summary = true;
+                    if failed_tests.is_empty() {
+                        failed_selection = 0;
+                    } else {
                         failed_selection = failed_selection.min(failed_tests.len() - 1);
-                        failed_detail_scroll = 0;
                     }
+                    failed_detail_scroll = 0;
                     continue;
                 }
 
