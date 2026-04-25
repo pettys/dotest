@@ -7,6 +7,29 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use super::config::RunConfig;
+
+/// Re-starts the watcher when settings change.
+pub(crate) fn apply_manual_watch_config(
+    root: &Path,
+    run_config: &RunConfig,
+    handle: &mut Option<ManualWatchHandle>,
+) {
+    if let Some(h) = handle.take() {
+        h.stop();
+    }
+    if !run_config.manual_watch_enabled {
+        return;
+    }
+    let delay = Duration::from_millis(run_config.manual_watch_delay_ms as u64);
+    match start_manual_watch(root.to_path_buf(), delay) {
+        Ok(h) => *handle = Some(h),
+        Err(e) => {
+            eprintln!("Could not start manual watch: {e}");
+        }
+    }
+}
+
 const POLL_TICK_MS: u64 = 150;
 
 /// Returns true for `.cs` under the tree, excluding `bin`, `obj`, `.git`, `target`, etc.

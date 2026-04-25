@@ -4,11 +4,14 @@ use crate::core::tree::build_flat_tree;
 
 pub(crate) mod config;
 mod discovery_cache;
+mod failed_tests;
+mod failure_summary;
 mod filter;
 mod interactive;
 mod layout;
 mod manual_watch;
 mod output;
+mod test_run;
 
 pub fn run() -> Result<()> {
     let config = config::RunConfig::load();

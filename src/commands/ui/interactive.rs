@@ -3,14 +3,22 @@ use crate::core::executor::discover_tests;
 use crate::core::tree::{build_flat_tree, TreeNode};
 use arboard::Clipboard;
 use std::io;
-use std::path::Path;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use super::manual_watch::{start_manual_watch, ManualWatchHandle};
+use super::failed_tests::{
+    build_filter_for_display_names, extract_failed_tests, filter_key_for_vstest, FailedTestInfo,
+};
+use super::failure_summary::{
+    clicked_detail_index, compute_failure_detail_link_hover, failed_detail_styled_line_with_hover,
+    failed_summary_detail_rect, failed_summary_list_rect, open_path_in_default_editor,
+    parse_stack_trace_target,
+};
+use super::manual_watch::{apply_manual_watch_config, ManualWatchHandle};
+use super::test_run::launch_filtered_test_run;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -26,156 +34,9 @@ use ratatui::{
 use super::config::{OutputMode, RunConfig, Verbosity};
 use super::filter::{build_filter, sync_parents};
 use super::layout::{centered_rect, format_elapsed, output_wrapped_scroll_max, styled_output_lines};
-use super::output::{kill_process, OutputEvent, spawn_test_run};
+use super::output::{kill_process, OutputEvent};
 
-#[derive(Clone, Debug, Default)]
-struct FailedTestInfo {
-    name: String,
-    details: Vec<String>,
-}
-
-fn is_status_result_line(trimmed: &str) -> bool {
-    trimmed.starts_with("Passed ")
-        || trimmed.starts_with("Failed ")
-        || trimmed.starts_with("Skipped ")
-        || trimmed.starts_with('✓')
-        || trimmed.starts_with('✗')
-        || trimmed.starts_with('⚠')
-}
-
-fn extract_failed_tests(lines: &[String]) -> Vec<FailedTestInfo> {
-    let mut failed: Vec<FailedTestInfo> = Vec::new();
-    let mut i = 0usize;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        if trimmed.starts_with("Failed ") {
-            let after = trimmed.trim_start_matches("Failed ").trim();
-            let name = after.split(" [").next().unwrap_or(after).trim().to_string();
-            if name.is_empty() {
-                i += 1;
-                continue;
-            }
-
-            let mut details = Vec::new();
-            let mut j = i + 1;
-            while j < lines.len() {
-                let next_trimmed = lines[j].trim();
-                let lower = next_trimmed.to_lowercase();
-                if is_status_result_line(next_trimmed)
-                    || lower.starts_with("total tests:")
-                    || lower.starts_with("passed:")
-                    || lower.starts_with("failed:")
-                    || lower.starts_with("skipped:")
-                {
-                    break;
-                }
-                details.push(lines[j].clone());
-                j += 1;
-            }
-
-            if let Some(existing) = failed.iter_mut().find(|f| f.name == name) {
-                if existing.details.is_empty() && !details.is_empty() {
-                    existing.details = details;
-                }
-            } else {
-                failed.push(FailedTestInfo { name, details });
-            }
-            i = j;
-            continue;
-        }
-        i += 1;
-    }
-    failed
-}
-
-/// Strip VSTest parameter tail so `Name(a,b)` can be used in `FullyQualifiedName~` filters.
-fn filter_key_for_vstest(name: &str) -> String {
-    name.split('(').next().unwrap_or(name).trim().to_string()
-}
-
-fn build_filter_for_display_names(names: &[String]) -> String {
-    names
-        .iter()
-        .map(|n| {
-            let k = filter_key_for_vstest(n);
-            format!("FullyQualifiedName~{k}")
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-fn apply_manual_watch_config(
-    root: &Path,
-    run_config: &RunConfig,
-    handle: &mut Option<ManualWatchHandle>,
-) {
-    if let Some(h) = handle.take() {
-        h.stop();
-    }
-    if !run_config.manual_watch_enabled {
-        return;
-    }
-    let delay = Duration::from_millis(run_config.manual_watch_delay_ms as u64);
-    match start_manual_watch(root.to_path_buf(), delay) {
-        Ok(h) => *handle = Some(h),
-        Err(e) => {
-            eprintln!("Could not start manual watch: {e}");
-        }
-    }
-}
-
-/// Shared by Enter, manual watch, and failed-test reruns. `filter` is the
-/// `FullyQualifiedName~…` string from `build_filter` (empty = run all).
-#[allow(clippy::too_many_arguments)]
-fn launch_filtered_test_run(
-    filter: String,
-    heading: &str,
-    run_config: &RunConfig,
-    output_lines: &mut Vec<String>,
-    output_rx: &mut Option<mpsc::Receiver<OutputEvent>>,
-    output_scroll: &mut u16,
-    output_follow_tail: &mut bool,
-    run_pid: &mut Option<u32>,
-    run_start: &mut Option<Instant>,
-    run_passed: &mut usize,
-    run_failed: &mut usize,
-    run_skipped: &mut usize,
-    failed_tests: &mut Vec<FailedTestInfo>,
-    show_failure_summary: &mut bool,
-    failed_selection: &mut usize,
-    failed_detail_scroll: &mut u16,
-    is_running: &mut bool,
-    show_output_fullscreen: &mut bool,
-) {
-    *show_output_fullscreen = run_config.output_mode == OutputMode::Fullscreen;
-    output_lines.clear();
-    *output_scroll = 0;
-    *output_follow_tail = true;
-    output_lines.push(heading.to_string());
-    if filter.is_empty() {
-        output_lines.push("  (all selected tests, no name filter)".to_string());
-    }
-    output_lines.push(String::new());
-    match spawn_test_run(Some(filter), run_config) {
-        Ok((rx, pid)) => {
-            *output_rx = Some(rx);
-            *run_pid = Some(pid);
-            *is_running = true;
-            *run_start = Some(Instant::now());
-            *run_passed = 0;
-            *run_failed = 0;
-            *run_skipped = 0;
-            failed_tests.clear();
-            *show_failure_summary = false;
-            *failed_selection = 0;
-            *failed_detail_scroll = 0;
-        }
-        Err(e) => {
-            output_lines.push(format!("Error: {e}"));
-        }
-    }
-}
-
+/// Interactive TUI: test tree, run output, settings, and failure summary.
 pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -201,6 +62,8 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
     let mut show_failure_summary = false;
     let mut failed_selection: usize = 0;
     let mut failed_detail_scroll: u16 = 0;
+    // Detail line index for stack links while the pointer is over that line in Error Details.
+    let mut failure_detail_hover: Option<usize> = None;
 
     let mut show_config = false;
     // 0: skip build, 1: verbosity, 2: cache, 3: output, 4: manual watch, 5: debounce
@@ -279,6 +142,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             show_failure_summary = true;
                             failed_selection = 0;
                             failed_detail_scroll = 0;
+                            failure_detail_hover = None;
                         }
                         run_pid = None;
                     }
@@ -325,6 +189,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             .map(|n| n.test_count)
                             .sum();
                         let heading = format!("━━━ Manual watch: re-running {sel_count} checked test(s)… ━━━");
+                        failure_detail_hover = None;
                         launch_filtered_test_run(
                             filter_str,
                             &heading,
@@ -646,8 +511,8 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     Line::from("  Debounce delay is adjusted in Settings (Ctrl+P)."),
                     Line::from(""),
                     Line::from(Span::styled(" Failed summary (Ctrl+E)", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                    Line::from("  ↑/↓ PgUp/Dn : Move list & error details  |  c: copy names  d: copy details"),
-                    Line::from("  r : Re-run selected failed test  |  R : Re-run all failed  |  Esc: close"),
+                    Line::from("  Shift+↑/↓: Select failed test  |  ↑/↓/PgUp/Dn: Scroll error details (not the list)"),
+                    Line::from("  r: Re-run one  |  R: Re-run all  |  c/d: copy  |  click list: pick  |  Esc: close"),
                     Line::from(""),
                     Line::from(Span::styled("  Esc or Enter closes this help window.", Style::default().fg(Color::DarkGray))),
                 ];
@@ -730,15 +595,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                         selected
                             .details
                             .iter()
-                            .map(|line| {
-                                let style = if line.contains("Error Message:") {
-                                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                                } else if line.contains("Stack Trace:") {
-                                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-                                } else {
-                                    Style::default().fg(Color::White)
-                                };
-                                Line::from(Span::styled(line.clone(), style))
+                            .enumerate()
+                            .map(|(i, line)| {
+                                failed_detail_styled_line_with_hover(line, i, failure_detail_hover)
                             })
                             .collect()
                     }
@@ -756,7 +615,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 f.render_widget(detail_widget, body[1]);
 
                 let footer = Paragraph::new(
-                    " ↑/↓: select  PgUp-Dn/scroll  c: copy names  d: copy error  r: re-run 1  R: re-run all  Esc: close ",
+                    " Shift+↑/↓: pick test  |  ↑/↓/Pg: scroll  |  link highlights under pointer  |  click to open  |  c d r R Esc ",
                 )
                 .style(Style::default().fg(Color::Red));
                 f.render_widget(footer, inner[1]);
@@ -767,12 +626,119 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             match event::read()? {
                 Event::Mouse(mouse) => {
                     if show_failure_summary {
+                        let area = terminal.size()?;
+                        let list_rect = failed_summary_list_rect(area);
+                        let list_inner_x = list_rect.x.saturating_add(1);
+                        let list_inner_y = list_rect.y.saturating_add(1);
+                        let list_inner_width = list_rect.width.saturating_sub(2);
+                        let list_inner_height = list_rect.height.saturating_sub(2);
+                        let mouse_in_list_pane = list_inner_width > 0
+                            && list_inner_height > 0
+                            && mouse.column >= list_inner_x
+                            && mouse.column < list_inner_x.saturating_add(list_inner_width)
+                            && mouse.row >= list_inner_y
+                            && mouse.row < list_inner_y.saturating_add(list_inner_height);
+                        let detail_rect = failed_summary_detail_rect(area);
+                        let detail_inner_x = detail_rect.x.saturating_add(1);
+                        let detail_inner_y = detail_rect.y.saturating_add(1);
+                        let detail_inner_width = detail_rect.width.saturating_sub(2);
+                        let detail_inner_height = detail_rect.height.saturating_sub(2);
+                        let mouse_in_detail_pane = detail_inner_width > 0
+                            && detail_inner_height > 0
+                            && mouse.column >= detail_inner_x
+                            && mouse.column < detail_inner_x.saturating_add(detail_inner_width)
+                            && mouse.row >= detail_inner_y
+                            && mouse.row < detail_inner_y.saturating_add(detail_inner_height);
+
                         match mouse.kind {
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                if !failed_tests.is_empty() {
+                                    if mouse_in_list_pane {
+                                        let rel = mouse
+                                            .row
+                                            .saturating_sub(list_inner_y) as usize;
+                                        if rel < failed_tests.len() {
+                                            failed_selection = rel;
+                                            failed_detail_scroll = 0;
+                                            failure_detail_hover = None;
+                                        }
+                                    } else if mouse_in_detail_pane {
+                                        let selected = &failed_tests[failed_selection.min(failed_tests.len() - 1)];
+                                        if let Some(detail_index) = clicked_detail_index(
+                                            &selected.details,
+                                            detail_inner_width,
+                                            failed_detail_scroll,
+                                            mouse.row.saturating_sub(detail_inner_y),
+                                        ) {
+                                            if let Some(target) = parse_stack_trace_target(&selected.details[detail_index]) {
+                                                match open_path_in_default_editor(&target.path) {
+                                                    Ok(()) => {
+                                                        let message = if let Some(line_number) = target.line_number {
+                                                            format!("✓ Opened {} (line {}).", target.path, line_number)
+                                                        } else {
+                                                            format!("✓ Opened {}.", target.path)
+                                                        };
+                                                        output_lines.push(message);
+                                                    }
+                                                    Err(e) => output_lines.push(format!(
+                                                        "✗ Could not open {}: {}",
+                                                        target.path, e
+                                                    )),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             MouseEventKind::ScrollUp => {
-                                failed_detail_scroll = failed_detail_scroll.saturating_sub(3);
+                                if mouse_in_detail_pane {
+                                    failed_detail_scroll = failed_detail_scroll.saturating_sub(3);
+                                }
+                                failure_detail_hover = compute_failure_detail_link_hover(
+                                    &failed_tests,
+                                    failed_selection,
+                                    detail_inner_width,
+                                    detail_inner_y,
+                                    failed_detail_scroll,
+                                    mouse_in_detail_pane,
+                                    mouse.row,
+                                );
                             }
                             MouseEventKind::ScrollDown => {
-                                failed_detail_scroll = failed_detail_scroll.saturating_add(3);
+                                if mouse_in_detail_pane {
+                                    failed_detail_scroll = failed_detail_scroll.saturating_add(3);
+                                }
+                                failure_detail_hover = compute_failure_detail_link_hover(
+                                    &failed_tests,
+                                    failed_selection,
+                                    detail_inner_width,
+                                    detail_inner_y,
+                                    failed_detail_scroll,
+                                    mouse_in_detail_pane,
+                                    mouse.row,
+                                );
+                            }
+                            MouseEventKind::Moved => {
+                                failure_detail_hover = compute_failure_detail_link_hover(
+                                    &failed_tests,
+                                    failed_selection,
+                                    detail_inner_width,
+                                    detail_inner_y,
+                                    failed_detail_scroll,
+                                    mouse_in_detail_pane,
+                                    mouse.row,
+                                );
+                            }
+                            MouseEventKind::Drag(_) => {
+                                failure_detail_hover = compute_failure_detail_link_hover(
+                                    &failed_tests,
+                                    failed_selection,
+                                    detail_inner_width,
+                                    detail_inner_y,
+                                    failed_detail_scroll,
+                                    mouse_in_detail_pane,
+                                    mouse.row,
+                                );
                             }
                             _ => {}
                         }
@@ -805,33 +771,67 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                 }
 
                 if show_failure_summary {
+                    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                     match key.code {
                         KeyCode::Esc => {
                             show_failure_summary = false;
+                            failure_detail_hover = None;
                         }
                         KeyCode::Up => {
                             if !failed_tests.is_empty() {
-                                failed_selection = failed_selection.saturating_sub(1);
-                                failed_detail_scroll = 0;
+                                if shift {
+                                    failed_selection = failed_selection.saturating_sub(1);
+                                    failed_detail_scroll = 0;
+                                    failure_detail_hover = None;
+                                } else {
+                                    failed_detail_scroll = failed_detail_scroll.saturating_sub(1);
+                                    failure_detail_hover = None;
+                                }
                             }
                         }
                         KeyCode::Down => {
                             if !failed_tests.is_empty() {
-                                failed_selection = (failed_selection + 1).min(failed_tests.len() - 1);
-                                failed_detail_scroll = 0;
+                                if shift {
+                                    failed_selection = (failed_selection + 1).min(failed_tests.len() - 1);
+                                    failed_detail_scroll = 0;
+                                    failure_detail_hover = None;
+                                } else {
+                                    failed_detail_scroll = failed_detail_scroll.saturating_add(1);
+                                    failure_detail_hover = None;
+                                }
                             }
                         }
                         KeyCode::PageUp => {
                             failed_detail_scroll = failed_detail_scroll.saturating_sub(5);
+                            failure_detail_hover = None;
                         }
                         KeyCode::PageDown => {
                             failed_detail_scroll = failed_detail_scroll.saturating_add(5);
+                            failure_detail_hover = None;
                         }
                         KeyCode::Home => {
-                            failed_detail_scroll = 0;
+                            if shift {
+                                if !failed_tests.is_empty() {
+                                    failed_selection = 0;
+                                    failed_detail_scroll = 0;
+                                    failure_detail_hover = None;
+                                }
+                            } else {
+                                failed_detail_scroll = 0;
+                                failure_detail_hover = None;
+                            }
                         }
                         KeyCode::End => {
-                            failed_detail_scroll = u16::MAX;
+                            if shift {
+                                if !failed_tests.is_empty() {
+                                    failed_selection = failed_tests.len().saturating_sub(1);
+                                    failed_detail_scroll = 0;
+                                    failure_detail_hover = None;
+                                }
+                            } else {
+                                failed_detail_scroll = u16::MAX;
+                                failure_detail_hover = None;
+                            }
                         }
                         KeyCode::Char('c') => {
                             if !failed_tests.is_empty() {
@@ -867,6 +867,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                 let f = &failed_tests[failed_selection.min(failed_tests.len().saturating_sub(1))];
                                 let fk = build_filter_for_display_names(&[filter_key_for_vstest(&f.name)]);
                                 show_failure_summary = false;
+                                failure_detail_hover = None;
                                 launch_filtered_test_run(
                                     fk,
                                     "━━━ Re-running 1 failed test… ━━━",
@@ -895,6 +896,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                 let n = names.len();
                                 let fk = build_filter_for_display_names(&names);
                                 show_failure_summary = false;
+                                failure_detail_hover = None;
                                 launch_filtered_test_run(
                                     fk,
                                     &format!("━━━ Re-running {n} failed test(s)… ━━━"),
@@ -1002,6 +1004,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                 failed_selection = failed_selection.min(failed_tests.len() - 1);
                             }
                             failed_detail_scroll = 0;
+                            failure_detail_hover = None;
                         }
                         KeyCode::PageUp => {
                             if show_output_panel {
@@ -1091,6 +1094,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                         failed_selection = failed_selection.min(failed_tests.len() - 1);
                     }
                     failed_detail_scroll = 0;
+                    failure_detail_hover = None;
                     continue;
                 }
 
@@ -1180,6 +1184,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                 .map(|n| n.test_count)
                                 .sum();
                             let heading = format!("━━━ Running {sel_count} selected test(s)… ━━━");
+                            failure_detail_hover = None;
                             launch_filtered_test_run(
                                 filter_str,
                                 &heading,
