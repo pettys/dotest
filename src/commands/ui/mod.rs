@@ -20,7 +20,9 @@ pub fn run() -> Result<()> {
         cached
     } else {
         println!("Discovering tests (this may take a moment)...");
-        let tests = discover_tests(true, config.no_restore)?;
+        // Discovery should be resilient on clean repos; forcing --no-build can
+        // fail with "test source file ... was not found" when binaries aren't built yet.
+        let tests = discover_tests(false, config.no_restore)?;
         discovery_cache::save_discovery_cache(&tests)?;
         tests
     };

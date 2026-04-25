@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::core::executor::{
     strip_params, is_test_attribute, extract_method_name, extract_class_name, enrich, parse_cs_content,
-    build_discovery_entries,
+    build_discovery_entries, format_discovery_failure,
 };
 
 /// Parametric tests: many `dotnet test -t` lines map to one source method → one leaf, merged count.
@@ -37,6 +37,51 @@ fn test_parse_cs_content_utf8_bom_before_namespace() {
         "qualified class should include namespace, got {}",
         qc
     );
+}
+
+#[test]
+fn test_discovery_failure_explains_missing_sdk_from_global_json() {
+    let stderr = r#"The command could not be loaded, possibly because:
+  * You intended to execute a .NET SDK command:
+      A compatible .NET SDK was not found.
+
+Requested SDK version: 7.0.101
+global.json file: C:\Users\Joatan\Repos\wolverine\global.json
+
+Installed SDKs:
+10.0.100-rc.1.25451.107 [C:\Program Files\dotnet\sdk]"#;
+
+    let message = format_discovery_failure(Some(1), "", stderr, true, true, None);
+
+    assert!(message.contains("Test discovery failed while running `dotnet test /p:UseSharedCompilation=true -t --no-build --no-restore`"));
+    assert!(message.contains("The .NET SDK selected by global.json is not installed or cannot be used"));
+    assert!(message.contains("Install the requested SDK, or update global.json"));
+    assert!(message.contains("Requested SDK version: 7.0.101"));
+}
+
+#[test]
+fn test_discovery_parsing_extracts_tests_even_with_noise_before_list() {
+    let stdout = r#"Some build warning
+The following Tests are available:
+    Ns.ClassA.TestOne
+    Ns.ClassB.TestTwo(param: 5)
+"#;
+    let mut tests = Vec::new();
+    let mut capturing = false;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed == "The following Tests are available:" {
+            capturing = true;
+            continue;
+        }
+        if capturing && !trimmed.is_empty() {
+            tests.push(trimmed.to_string());
+        }
+    }
+
+    assert_eq!(tests.len(), 2);
+    assert_eq!(tests[0], "Ns.ClassA.TestOne");
+    assert_eq!(tests[1], "Ns.ClassB.TestTwo(param: 5)");
 }
 
 /// Tree path is disk-folder first (like VS Code), VSTest filter stays fully qualified.

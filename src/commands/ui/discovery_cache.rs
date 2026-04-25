@@ -135,7 +135,7 @@ pub(crate) fn try_load_cached_tests() -> Option<Vec<(String, String, usize)>> {
     let fp = compute_source_fingerprint();
     let s = fs::read_to_string(CACHE_PATH).ok()?;
     let file: DiscoveryCacheFile = serde_json::from_str(&s).ok()?;
-    if file.fingerprint == fp {
+    if file.fingerprint == fp && !file.tests.is_empty() {
         Some(file.tests)
     } else {
         None
@@ -143,6 +143,10 @@ pub(crate) fn try_load_cached_tests() -> Option<Vec<(String, String, usize)>> {
 }
 
 pub(crate) fn save_discovery_cache(tests: &[(String, String, usize)]) -> Result<()> {
+    if tests.is_empty() {
+        return Ok(());
+    }
+
     let fp = compute_source_fingerprint();
     let file = DiscoveryCacheFile {
         fingerprint: fp,

@@ -1,9 +1,11 @@
-use anyhow::{Context, Result};
-use std::process::Command;
-use std::path::Path;
+use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, BTreeMap};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 use crate::core::config::Config;
 
+static SELECTED_TEST_TARGET: OnceLock<Option<String>> = OnceLock::new();
 
 
 /// Returns `(tree_fqn, filter_key, test_count)` triples.
@@ -540,13 +542,242 @@ fn collect_csproj(dir: &Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+fn is_solution_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("sln") | Some("slnx")
+    )
+}
+
+fn is_project_file(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("csproj")
+}
+
+fn is_test_project_file(path: &Path) -> bool {
+    if !is_project_file(path) {
+        return false;
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let lower = content.to_lowercase();
+    lower.contains("microsoft.net.test.sdk")
+        || lower.contains("<istestproject>true</istestproject>")
+        || lower.contains("xunit")
+        || lower.contains("nunit")
+        || lower.contains("mstest")
+}
+
+fn collect_solution_or_project_in_dir(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if is_solution_file(&path) || is_project_file(&path) {
+            out.push(path);
+        }
+    } 
+    out.sort();
+    out
+}
+
+fn collect_solution_and_project_files(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) {
+    if depth > 5 {
+        return;
+    }
+
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if name.starts_with('.') || name == "obj" || name == "bin" || name == "target" {
+                continue;
+            }
+            collect_solution_and_project_files(&path, depth + 1, out);
+        } else if path.is_file() && (is_solution_file(&path) || is_project_file(&path)) {
+            out.push(path);
+        }
+    }
+}
+
+fn prompt_user_for_target(candidates: &[PathBuf], cwd: &Path) -> Result<Option<String>> {
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    if candidates.len() == 1 {
+        let rel = candidates[0]
+            .strip_prefix(cwd)
+            .unwrap_or(&candidates[0])
+            .to_string_lossy()
+            .replace('\\', "/");
+        println!("Using discovered test target: {}", rel);
+        return Ok(Some(rel));
+    }
+
+    println!();
+    println!("Multiple solution/project targets were discovered.");
+    println!("Select a target to run `dotnet test` against:");
+    for (idx, p) in candidates.iter().enumerate() {
+        let rel = p.strip_prefix(cwd).unwrap_or(p).to_string_lossy().replace('\\', "/");
+        println!("  {}. {}", idx + 1, rel);
+    }
+    println!();
+
+    loop {
+        print!("Enter number (1-{}), or press Enter to cancel: ", candidates.len());
+        let mut stdout = std::io::stdout();
+        let _ = std::io::Write::flush(&mut stdout);
+
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .context("Failed to read target selection")?;
+        let trimmed = input.trim();
+
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        if let Ok(n) = trimmed.parse::<usize>() {
+            if n >= 1 && n <= candidates.len() {
+                let rel = candidates[n - 1]
+                    .strip_prefix(cwd)
+                    .unwrap_or(&candidates[n - 1])
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                println!("Selected test target: {}", rel);
+                return Ok(Some(rel));
+            }
+        }
+
+        println!("Invalid selection. Please type a number between 1 and {}.", candidates.len());
+    }
+}
+
+fn resolve_test_target(no_prompt: bool) -> Result<Option<String>> {
+    if let Some(cached) = SELECTED_TEST_TARGET.get() {
+        return Ok(cached.clone());
+    }
+
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
+    let direct_candidates = collect_solution_or_project_in_dir(&cwd);
+    let direct_solutions: Vec<PathBuf> = direct_candidates
+        .iter()
+        .filter(|p| is_solution_file(p))
+        .cloned()
+        .collect();
+    let direct_test_projects: Vec<PathBuf> = direct_candidates
+        .iter()
+        .filter(|p| is_test_project_file(p))
+        .cloned()
+        .collect();
+
+    if direct_solutions.len() == 1 {
+        let rel = direct_solutions[0]
+            .strip_prefix(&cwd)
+            .unwrap_or(&direct_solutions[0])
+            .to_string_lossy()
+            .replace('\\', "/");
+        let target = Some(rel);
+        let _ = SELECTED_TEST_TARGET.set(target.clone());
+        return Ok(target);
+    }
+
+    if direct_solutions.len() > 1 {
+        let target = if no_prompt {
+            direct_solutions
+                .first()
+                .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+        } else {
+            prompt_user_for_target(&direct_solutions, &cwd)?
+        };
+        let _ = SELECTED_TEST_TARGET.set(target.clone());
+        return Ok(target);
+    }
+
+    if direct_test_projects.len() == 1 {
+        let rel = direct_test_projects[0]
+            .strip_prefix(&cwd)
+            .unwrap_or(&direct_test_projects[0])
+            .to_string_lossy()
+            .replace('\\', "/");
+        let target = Some(rel);
+        let _ = SELECTED_TEST_TARGET.set(target.clone());
+        return Ok(target);
+    }
+
+    if direct_test_projects.len() > 1 {
+        let target = if no_prompt {
+            direct_test_projects
+                .first()
+                .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+        } else {
+            prompt_user_for_target(&direct_test_projects, &cwd)?
+        };
+        let _ = SELECTED_TEST_TARGET.set(target.clone());
+        return Ok(target);
+    }
+
+    if direct_candidates.len() > 1 {
+        let target = if no_prompt {
+            direct_candidates
+                .first()
+                .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+        } else {
+            prompt_user_for_target(&direct_candidates, &cwd)?
+        };
+        let _ = SELECTED_TEST_TARGET.set(target.clone());
+        return Ok(target);
+    }
+
+    let mut candidates = Vec::new();
+    collect_solution_and_project_files(&cwd, 0, &mut candidates);
+    candidates.sort_by(|a, b| {
+        let a_sln = is_solution_file(a);
+        let b_sln = is_solution_file(b);
+        b_sln.cmp(&a_sln).then_with(|| a.cmp(b))
+    });
+
+    let target = if no_prompt {
+        candidates
+            .first()
+            .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+    } else {
+        prompt_user_for_target(&candidates, &cwd)?
+    };
+    let _ = SELECTED_TEST_TARGET.set(target.clone());
+    Ok(target)
+}
+
 fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String>> {
+    let target = resolve_test_target(false)?;
     let mut cmd = Command::new("dotnet");
     cmd.arg("test").arg("/p:UseSharedCompilation=true").arg("-t");
+    if let Some(target) = &target {
+        cmd.arg(target);
+    }
     if no_build { cmd.arg("--no-build"); }
     if no_restore { cmd.arg("--no-restore"); }
     let output = cmd.output().context("Failed to run dotnet test -t")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let mut tests = Vec::new();
     let mut capturing = false;
     for line in stdout.lines() {
@@ -565,7 +796,108 @@ fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String
             }
         }
     }
+
+    // Some repos emit partial build failures/warnings but still print a valid test list.
+    // If discovery produced tests, continue instead of failing on a non-zero exit code.
+    if !output.status.success() && tests.is_empty() {
+        bail!(
+            "{}",
+            format_discovery_failure(
+                output.status.code(),
+                &stdout,
+                &stderr,
+                no_build,
+                no_restore,
+                target.as_deref(),
+            )
+        );
+    }
     Ok(tests)
+}
+
+pub(crate) fn format_discovery_failure(
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    no_build: bool,
+    no_restore: bool,
+    target: Option<&str>,
+) -> String {
+    let mut command = "dotnet test /p:UseSharedCompilation=true -t".to_string();
+    if let Some(target) = target {
+        command.push(' ');
+        command.push_str(target);
+    }
+    if no_build {
+        command.push_str(" --no-build");
+    }
+    if no_restore {
+        command.push_str(" --no-restore");
+    }
+
+    let mut message = format!(
+        "Test discovery failed while running `{}`{}.",
+        command,
+        exit_code.map_or_else(String::new, |code| format!(" (exit code {code})"))
+    );
+
+    let combined = format!("{stdout}\n{stderr}");
+    if combined.contains("A compatible .NET SDK was not found")
+        || combined.contains("Requested SDK version:")
+        || combined.contains("global.json file:")
+    {
+        message.push_str(
+            "\n\nThe .NET SDK selected by global.json is not installed or cannot be used. \
+Install the requested SDK, or update global.json to an SDK installed on this machine. \
+Run `dotnet --list-sdks` to see what is available.",
+        );
+    }
+    if combined.contains("MSBUILD : error MSB1003")
+        || combined.contains("Specify a project or solution file.")
+    {
+        message.push_str(
+            "\n\nNo `.sln` or `.csproj` file was found in the current directory. \
+Run dotest from a solution/project folder, or choose a discovered target when prompted.",
+        );
+    }
+    if combined.contains("MSBUILD : error MSB1011")
+        || combined.contains("Specify which project or solution file to use")
+    {
+        message.push_str(
+            "\n\nMultiple `.sln`/`.csproj` files were found in this directory. \
+Select a specific target from the prompt menu.",
+        );
+    }
+    if combined.contains("The test source file")
+        && combined.contains("provided was not found")
+        && no_build
+    {
+        message.push_str(
+            "\n\nThe selected target has not been built yet, but discovery was run with `--no-build`. \
+Disable \"Skip build\" for discovery/run or run a normal `dotnet test` once to produce test binaries.",
+        );
+    }
+    if combined.contains("error MSB3202")
+        && combined.contains("project file")
+        && combined.contains("was not found")
+    {
+        message.push_str(
+            "\n\nThe selected solution references local sibling repositories/projects that are missing on this machine. \
+Choose another solution/project target, or clone the missing dependency repos.",
+        );
+    }
+
+    if !stderr.trim().is_empty() {
+        message.push_str("\n\nstderr:\n");
+        message.push_str(stderr.trim());
+    }
+
+    if !stdout.trim().is_empty() {
+        message.push_str("\n\nstdout:\n");
+        message.push_str(stdout.trim());
+    }
+
+    message
 }
 
 
@@ -575,6 +907,9 @@ fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String
 pub fn build_test_command(filter: Option<String>, no_build: bool, no_restore: bool) -> Command {
     let mut cmd = Command::new("dotnet");
     cmd.arg("test").arg("/p:UseSharedCompilation=true");
+    if let Ok(Some(target)) = resolve_test_target(true) {
+        cmd.arg(target);
+    }
 
     let mut final_filter = filter;
     if let Ok(config) = Config::new() {
