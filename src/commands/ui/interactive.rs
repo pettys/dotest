@@ -1124,9 +1124,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
 
                 if key.code == KeyCode::F(5) {
                     output_lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
-                    output_lines.push("🔄 Rediscovering tests... please wait.".to_string());
+                    output_lines.push("🔄 Rediscovering tests (building if needed)... please wait.".to_string());
 
-                    if let Ok(tests) = discover_tests(true, run_config.no_restore) {
+                    if let Ok(tests) = discover_tests(false, run_config.no_restore) {
                         let _ = super::discovery_cache::save_discovery_cache(&tests);
                         *tree = build_flat_tree(&tests);
                         state.select(Some(0));
