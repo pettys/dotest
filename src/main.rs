@@ -1,10 +1,10 @@
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 mod commands;
+mod core;
 #[cfg(test)]
 mod tests;
-mod core;
 
 #[derive(Parser)]
 #[command(name = "dotest")]

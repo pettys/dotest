@@ -1,9 +1,9 @@
 //! Fingerprint-based cache for `dotnet test -t` discovery. Skips discovery on startup when the
 //! workspace looks unchanged since the last run.
 //!
-//! - **Git repo:** SHA-256 of `git rev-parse HEAD`, `git diff HEAD`, and `git status --porcelain`
-//!   (so staged, unstaged, and untracked changes all invalidate the cache).
-//! - **Otherwise:** SHA-256 over `.cs` / `.csproj` paths, sizes, and mtimes (shallow walk, skips `bin`/`obj`/etc.).
+//! SHA-256 over discovery-relevant source/config paths, sizes, and mtimes (shallow walk,
+//! skips `bin`/`obj`/etc.). Generated files and unrelated git noise should not force a
+//! slow `dotnet test -t` rediscovery.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,6 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 pub(crate) const CACHE_PATH: &str = ".dotest_cache.json";
@@ -20,56 +19,6 @@ pub(crate) const CACHE_PATH: &str = ".dotest_cache.json";
 struct DiscoveryCacheFile {
     fingerprint: String,
     tests: Vec<(String, String, usize)>,
-}
-
-/// `git rev-parse HEAD` + `git diff HEAD` + `git status --porcelain`, or `None` if not a usable git worktree.
-fn try_git_fingerprint() -> Option<String> {
-    let root = std::env::current_dir().ok()?;
-    let inside = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(&root)
-        .output()
-        .ok()?;
-    if !inside.status.success() {
-        return None;
-    }
-    if !String::from_utf8_lossy(&inside.stdout).trim().eq_ignore_ascii_case("true") {
-        return None;
-    }
-
-    let head = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(&root)
-        .output()
-        .ok()?;
-    if !head.status.success() {
-        return None;
-    }
-
-    let diff = Command::new("git")
-        .args(["diff", "HEAD"])
-        .current_dir(&root)
-        .output()
-        .ok()?;
-    if !diff.status.success() {
-        return None;
-    }
-
-    let porcelain = Command::new("git")
-        .args(["status", "--porcelain=v1", "-u"])
-        .current_dir(&root)
-        .output()
-        .ok()?;
-    if !porcelain.status.success() {
-        return None;
-    }
-
-    let mut h = Sha256::new();
-    h.update(b"git-v1\0");
-    h.update(&head.stdout);
-    h.update(&diff.stdout);
-    h.update(&porcelain.stdout);
-    Some(format!("{:x}", h.finalize()))
 }
 
 fn hash_dir(path: &Path, depth: usize, max_depth: usize, h: &mut Sha256) -> io::Result<()> {
@@ -100,24 +49,43 @@ fn hash_dir(path: &Path, depth: usize, max_depth: usize, h: &mut Sha256) -> io::
         let p = e.path();
         if p.is_dir() {
             hash_dir(&p, depth + 1, max_depth, h)?;
-        } else if let Some(ext) = p.extension().and_then(|x| x.to_str()) {
-            let ext = ext.to_ascii_lowercase();
-            if ext == "cs" || ext == "csproj" {
-                h.update(p.to_string_lossy().as_bytes());
-                h.update(&[0]);
-                if let Ok(meta) = fs::metadata(&p) {
-                    h.update(meta.len().to_le_bytes());
-                    if let Ok(m) = meta.modified() {
-                        if let Ok(d) = m.duration_since(UNIX_EPOCH) {
-                            h.update(d.as_secs().to_le_bytes());
-                            h.update(d.subsec_nanos().to_le_bytes());
-                        }
+        } else if is_discovery_relevant_file(&p) {
+            h.update(p.to_string_lossy().as_bytes());
+            h.update(&[0]);
+            if let Ok(meta) = fs::metadata(&p) {
+                h.update(meta.len().to_le_bytes());
+                if let Ok(m) = meta.modified() {
+                    if let Ok(d) = m.duration_since(UNIX_EPOCH) {
+                        h.update(d.as_secs().to_le_bytes());
+                        h.update(d.subsec_nanos().to_le_bytes());
                     }
                 }
             }
         }
     }
     Ok(())
+}
+
+fn is_discovery_relevant_file(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        file_name.as_str(),
+        "global.json" | "nuget.config" | "packages.lock.json" | "directory.packages.props"
+    ) {
+        return true;
+    }
+
+    matches!(
+        path.extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.to_ascii_lowercase())
+            .as_deref(),
+        Some("cs" | "csproj" | "sln" | "slnx" | "props" | "targets")
+    )
 }
 
 fn filesystem_fingerprint() -> String {
@@ -128,7 +96,7 @@ fn filesystem_fingerprint() -> String {
 }
 
 pub(crate) fn compute_source_fingerprint() -> String {
-    try_git_fingerprint().unwrap_or_else(filesystem_fingerprint)
+    filesystem_fingerprint()
 }
 
 pub(crate) fn try_load_cached_tests() -> Option<Vec<(String, String, usize)>> {

@@ -34,16 +34,21 @@ const POLL_TICK_MS: u64 = 150;
 
 /// Returns true for `.cs` under the tree, excluding `bin`, `obj`, `.git`, `target`, etc.
 fn is_watched_code_file(path: &Path, root: &Path) -> bool {
-    if path
-        .components()
-        .any(|c| {
-            let s = c.as_os_str().to_string_lossy();
-            matches!(s.as_ref(), "bin" | "obj" | "target" | "node_modules" | "packages")
-                || s.starts_with('.') && s != "."
+    if path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        matches!(
+            s.as_ref(),
+            "bin" | "obj" | "target" | "node_modules" | "packages"
+        ) || s.starts_with('.') && s != "."
     }) {
         return false;
     }
-    if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("cs")) != Some(true) {
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("cs"))
+        != Some(true)
+    {
         return false;
     }
     path.starts_with(root)

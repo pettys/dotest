@@ -1,6 +1,6 @@
-use anyhow::Result;
 use crate::core::executor::discover_tests;
 use crate::core::tree::{build_flat_tree, TreeNode};
+use anyhow::Result;
 use arboard::Clipboard;
 use std::io;
 use std::sync::mpsc;
@@ -18,7 +18,10 @@ use super::manual_watch::{apply_manual_watch_config, ManualWatchHandle};
 use super::test_run::launch_filtered_test_run;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -33,11 +36,16 @@ use ratatui::{
 
 use super::config::{OutputMode, RunConfig, Verbosity};
 use super::filter::{build_filter, sync_parents};
-use super::layout::{centered_rect, format_elapsed, output_wrapped_scroll_max, styled_output_lines};
+use super::layout::{
+    centered_rect, format_elapsed, output_wrapped_scroll_max, styled_output_lines,
+};
 use super::output::{kill_process, OutputEvent};
 
 /// Interactive TUI: test tree, run output, settings, and failure summary.
-pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: RunConfig) -> Result<()> {
+pub(super) fn run_interactive_loop(
+    tree: &mut Vec<TreeNode>,
+    mut run_config: RunConfig,
+) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -93,18 +101,27 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                         let line_lower = trimmed.to_lowercase();
                         if let Some(pos) = line_lower.find("passed:") {
                             let rest = line_lower[pos + 7..].trim_start();
-                            let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                            if let Ok(n) = num_str.parse::<usize>() { run_passed = n; }
+                            let num_str: String =
+                                rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                            if let Ok(n) = num_str.parse::<usize>() {
+                                run_passed = n;
+                            }
                         }
                         if let Some(pos) = line_lower.find("failed:") {
                             let rest = line_lower[pos + 7..].trim_start();
-                            let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                            if let Ok(n) = num_str.parse::<usize>() { run_failed = n; }
+                            let num_str: String =
+                                rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                            if let Ok(n) = num_str.parse::<usize>() {
+                                run_failed = n;
+                            }
                         }
                         if let Some(pos) = line_lower.find("skipped:") {
                             let rest = line_lower[pos + 8..].trim_start();
-                            let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                            if let Ok(n) = num_str.parse::<usize>() { run_skipped = n; }
+                            let num_str: String =
+                                rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                            if let Ok(n) = num_str.parse::<usize>() {
+                                run_skipped = n;
+                            }
                         }
 
                         output_lines.push(line);
@@ -118,25 +135,39 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     }
                     Ok(OutputEvent::Finished(code)) => {
                         is_running = false;
-                        let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
+                        let elapsed = run_start
+                            .map(|s| format_elapsed(s.elapsed()))
+                            .unwrap_or_default();
 
                         output_lines.push(String::new());
-                        output_lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
+                        output_lines.push(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                .to_string(),
+                        );
 
                         let total = run_passed + run_failed + run_skipped;
                         let mut summary = format!("  Test Run Summary ({} total)", total);
-                        if run_passed > 0 { summary.push_str(&format!("  |  ✓ {} Passed", run_passed)); }
-                        if run_failed > 0 { summary.push_str(&format!("  |  ✗ {} Failed", run_failed)); }
-                        if run_skipped > 0 { summary.push_str(&format!("  |  ⚠ {} Skipped", run_skipped)); }
+                        if run_passed > 0 {
+                            summary.push_str(&format!("  |  ✓ {} Passed", run_passed));
+                        }
+                        if run_failed > 0 {
+                            summary.push_str(&format!("  |  ✗ {} Failed", run_failed));
+                        }
+                        if run_skipped > 0 {
+                            summary.push_str(&format!("  |  ⚠ {} Skipped", run_skipped));
+                        }
                         output_lines.push(summary);
 
                         let msg = match code {
                             Some(0) => format!("  Finished successfully in {}", elapsed),
                             Some(c) => format!("  Finished with exit code {} in {}", c, elapsed),
-                            None    => format!("  Process terminated after {}", elapsed),
+                            None => format!("  Process terminated after {}", elapsed),
                         };
                         output_lines.push(msg);
-                        output_lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
+                        output_lines.push(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                .to_string(),
+                        );
                         failed_tests = extract_failed_tests(&output_lines);
                         if run_failed > 0 && !failed_tests.is_empty() {
                             show_failure_summary = true;
@@ -150,7 +181,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     Err(mpsc::TryRecvError::Disconnected) => {
                         if is_running {
                             is_running = false;
-                            let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
+                            let elapsed = run_start
+                                .map(|s| format_elapsed(s.elapsed()))
+                                .unwrap_or_default();
                             output_lines.push(format!("✓ Process finished ({})", elapsed));
                             run_pid = None;
                         }
@@ -166,11 +199,7 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
             while h.rx.try_recv().is_ok() {
                 fired = true;
             }
-            if fired
-                && run_config.manual_watch_enabled
-                && !is_running
-                && !show_config
-                && !show_help
+            if fired && run_config.manual_watch_enabled && !is_running && !show_config && !show_help
             {
                 if show_failure_summary {
                     show_failure_summary = false;
@@ -191,7 +220,9 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             .filter(|n| n.is_leaf && n.is_selected)
                             .map(|n| n.test_count)
                             .sum();
-                        let heading = format!("━━━ Manual watch: re-running {sel_count} checked test(s)… ━━━");
+                        let heading = format!(
+                            "━━━ Manual watch: re-running {sel_count} checked test(s)… ━━━"
+                        );
                         failure_detail_hover = None;
                         launch_filtered_test_run(
                             filter_str,
@@ -237,37 +268,61 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
 
         let mut visible_indices = Vec::new();
         for i in 0..tree.len() {
-            if !matches_query[i] { continue; }
+            if !matches_query[i] {
+                continue;
+            }
             let mut hidden = false;
             if query.is_empty() {
                 let mut curr = tree[i].parent_idx;
                 while let Some(p) = curr {
-                    if !tree[p].is_expanded { hidden = true; break; }
+                    if !tree[p].is_expanded {
+                        hidden = true;
+                        break;
+                    }
                     curr = tree[p].parent_idx;
                 }
             }
-            if !hidden { visible_indices.push(i); }
+            if !hidden {
+                visible_indices.push(i);
+            }
         }
 
         if let Some(sel) = state.selected() {
             if sel >= visible_indices.len() {
-                state.select(if visible_indices.is_empty() { None } else { Some(visible_indices.len() - 1) });
+                state.select(if visible_indices.is_empty() {
+                    None
+                } else {
+                    Some(visible_indices.len() - 1)
+                });
             }
         } else if !visible_indices.is_empty() {
             state.select(Some(0));
         }
 
-        let selected_count: usize = tree.iter().filter(|n| n.is_leaf && n.is_selected).map(|n| n.test_count).sum();
-        let total_count: usize = tree.iter().filter(|n| n.is_leaf).map(|n| n.test_count).sum();
+        let selected_count: usize = tree
+            .iter()
+            .filter(|n| n.is_leaf && n.is_selected)
+            .map(|n| n.test_count)
+            .sum();
+        let total_count: usize = tree
+            .iter()
+            .filter(|n| n.is_leaf)
+            .map(|n| n.test_count)
+            .sum();
 
         let has_output = !output_lines.is_empty();
-        let show_output_panel = has_output && (run_config.output_mode == OutputMode::Split || show_output_fullscreen);
+        let show_output_panel =
+            has_output && (run_config.output_mode == OutputMode::Split || show_output_fullscreen);
         let area = terminal.size()?;
         let output_scroll_max = if show_output_panel {
             let constraints = if show_output_fullscreen {
                 vec![Constraint::Min(0), Constraint::Length(3)]
             } else {
-                vec![Constraint::Percentage(22), Constraint::Percentage(75), Constraint::Length(3)]
+                vec![
+                    Constraint::Percentage(22),
+                    Constraint::Percentage(75),
+                    Constraint::Length(3),
+                ]
             };
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -657,27 +712,33 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                             MouseEventKind::Down(MouseButton::Left) => {
                                 if !failed_tests.is_empty() {
                                     if mouse_in_list_pane {
-                                        let rel = mouse
-                                            .row
-                                            .saturating_sub(list_inner_y) as usize;
+                                        let rel = mouse.row.saturating_sub(list_inner_y) as usize;
                                         if rel < failed_tests.len() {
                                             failed_selection = rel;
                                             failed_detail_scroll = 0;
                                             failure_detail_hover = None;
                                         }
                                     } else if mouse_in_detail_pane {
-                                        let selected = &failed_tests[failed_selection.min(failed_tests.len() - 1)];
+                                        let selected = &failed_tests
+                                            [failed_selection.min(failed_tests.len() - 1)];
                                         if let Some(detail_index) = clicked_detail_index(
                                             &selected.details,
                                             detail_inner_width,
                                             failed_detail_scroll,
                                             mouse.row.saturating_sub(detail_inner_y),
                                         ) {
-                                            if let Some(target) = parse_stack_trace_target(&selected.details[detail_index]) {
+                                            if let Some(target) = parse_stack_trace_target(
+                                                &selected.details[detail_index],
+                                            ) {
                                                 match open_path_in_default_editor(&target.path) {
                                                     Ok(()) => {
-                                                        let message = if let Some(line_number) = target.line_number {
-                                                            format!("✓ Opened {} (line {}).", target.path, line_number)
+                                                        let message = if let Some(line_number) =
+                                                            target.line_number
+                                                        {
+                                                            format!(
+                                                                "✓ Opened {} (line {}).",
+                                                                target.path, line_number
+                                                            )
                                                         } else {
                                                             format!("✓ Opened {}.", target.path)
                                                         };
@@ -754,7 +815,8 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                 output_scroll = output_scroll.saturating_sub(3);
                             }
                             MouseEventKind::ScrollDown => {
-                                output_scroll = output_scroll.saturating_add(3).min(output_scroll_max);
+                                output_scroll =
+                                    output_scroll.saturating_add(3).min(output_scroll_max);
                                 output_follow_tail = output_scroll >= output_scroll_max;
                             }
                             _ => {}
@@ -763,205 +825,227 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                     continue;
                 }
                 Event::Key(key) => {
-                if key.kind != KeyEventKind::Press { continue; }
-
-                if show_help {
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Enter => { show_help = false; }
-                        _ => {}
+                    if key.kind != KeyEventKind::Press {
+                        continue;
                     }
-                    continue;
-                }
 
-                if show_failure_summary {
-                    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-                    match key.code {
-                        KeyCode::Esc => {
-                            show_failure_summary = false;
-                            failure_detail_hover = None;
-                        }
-                        KeyCode::Up => {
-                            if !failed_tests.is_empty() {
-                                if shift {
-                                    failed_selection = failed_selection.saturating_sub(1);
-                                    failed_detail_scroll = 0;
-                                    failure_detail_hover = None;
-                                } else {
-                                    failed_detail_scroll = failed_detail_scroll.saturating_sub(1);
-                                    failure_detail_hover = None;
-                                }
+                    if show_help {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Enter => {
+                                show_help = false;
                             }
+                            _ => {}
                         }
-                        KeyCode::Down => {
-                            if !failed_tests.is_empty() {
-                                if shift {
-                                    failed_selection = (failed_selection + 1).min(failed_tests.len() - 1);
-                                    failed_detail_scroll = 0;
-                                    failure_detail_hover = None;
-                                } else {
-                                    failed_detail_scroll = failed_detail_scroll.saturating_add(1);
-                                    failure_detail_hover = None;
-                                }
-                            }
-                        }
-                        KeyCode::PageUp => {
-                            failed_detail_scroll = failed_detail_scroll.saturating_sub(5);
-                            failure_detail_hover = None;
-                        }
-                        KeyCode::PageDown => {
-                            failed_detail_scroll = failed_detail_scroll.saturating_add(5);
-                            failure_detail_hover = None;
-                        }
-                        KeyCode::Home => {
-                            if shift {
-                                if !failed_tests.is_empty() {
-                                    failed_selection = 0;
-                                    failed_detail_scroll = 0;
-                                    failure_detail_hover = None;
-                                }
-                            } else {
-                                failed_detail_scroll = 0;
+                        continue;
+                    }
+
+                    if show_failure_summary {
+                        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                        match key.code {
+                            KeyCode::Esc => {
+                                show_failure_summary = false;
                                 failure_detail_hover = None;
                             }
-                        }
-                        KeyCode::End => {
-                            if shift {
+                            KeyCode::Up => {
                                 if !failed_tests.is_empty() {
-                                    failed_selection = failed_tests.len().saturating_sub(1);
+                                    if shift {
+                                        failed_selection = failed_selection.saturating_sub(1);
+                                        failed_detail_scroll = 0;
+                                        failure_detail_hover = None;
+                                    } else {
+                                        failed_detail_scroll =
+                                            failed_detail_scroll.saturating_sub(1);
+                                        failure_detail_hover = None;
+                                    }
+                                }
+                            }
+                            KeyCode::Down => {
+                                if !failed_tests.is_empty() {
+                                    if shift {
+                                        failed_selection =
+                                            (failed_selection + 1).min(failed_tests.len() - 1);
+                                        failed_detail_scroll = 0;
+                                        failure_detail_hover = None;
+                                    } else {
+                                        failed_detail_scroll =
+                                            failed_detail_scroll.saturating_add(1);
+                                        failure_detail_hover = None;
+                                    }
+                                }
+                            }
+                            KeyCode::PageUp => {
+                                failed_detail_scroll = failed_detail_scroll.saturating_sub(5);
+                                failure_detail_hover = None;
+                            }
+                            KeyCode::PageDown => {
+                                failed_detail_scroll = failed_detail_scroll.saturating_add(5);
+                                failure_detail_hover = None;
+                            }
+                            KeyCode::Home => {
+                                if shift {
+                                    if !failed_tests.is_empty() {
+                                        failed_selection = 0;
+                                        failed_detail_scroll = 0;
+                                        failure_detail_hover = None;
+                                    }
+                                } else {
                                     failed_detail_scroll = 0;
                                     failure_detail_hover = None;
                                 }
-                            } else {
-                                failed_detail_scroll = u16::MAX;
-                                failure_detail_hover = None;
                             }
-                        }
-                        KeyCode::Char('c') => {
-                            if !failed_tests.is_empty() {
-                                let names = failed_tests
-                                    .iter()
-                                    .map(|f| f.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                match Clipboard::new().and_then(|mut cb| cb.set_text(names)) {
-                                    Ok(_) => output_lines.push("✓ Copied failed test names to clipboard.".to_string()),
-                                    Err(_) => output_lines.push("✗ Could not copy failed test names to clipboard.".to_string()),
+                            KeyCode::End => {
+                                if shift {
+                                    if !failed_tests.is_empty() {
+                                        failed_selection = failed_tests.len().saturating_sub(1);
+                                        failed_detail_scroll = 0;
+                                        failure_detail_hover = None;
+                                    }
+                                } else {
+                                    failed_detail_scroll = u16::MAX;
+                                    failure_detail_hover = None;
                                 }
                             }
-                        }
-                        KeyCode::Char('d') | KeyCode::Char('m') => {
-                            if !failed_tests.is_empty() {
-                                let f = &failed_tests[failed_selection.min(failed_tests.len().saturating_sub(1))];
-                                let mut s = f.name.clone();
-                                if !f.details.is_empty() {
-                                    s.push('\n');
-                                    s.push_str(&f.details.join("\n"));
+                            KeyCode::Char('c') => {
+                                if !failed_tests.is_empty() {
+                                    let names = failed_tests
+                                        .iter()
+                                        .map(|f| f.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    match Clipboard::new().and_then(|mut cb| cb.set_text(names)) {
+                                        Ok(_) => output_lines.push(
+                                            "✓ Copied failed test names to clipboard.".to_string(),
+                                        ),
+                                        Err(_) => output_lines.push(
+                                            "✗ Could not copy failed test names to clipboard."
+                                                .to_string(),
+                                        ),
+                                    }
                                 }
-                                match Clipboard::new().and_then(|mut c| c.set_text(s)) {
+                            }
+                            KeyCode::Char('d') | KeyCode::Char('m') => {
+                                if !failed_tests.is_empty() {
+                                    let f = &failed_tests[failed_selection
+                                        .min(failed_tests.len().saturating_sub(1))];
+                                    let mut s = f.name.clone();
+                                    if !f.details.is_empty() {
+                                        s.push('\n');
+                                        s.push_str(&f.details.join("\n"));
+                                    }
+                                    match Clipboard::new().and_then(|mut c| c.set_text(s)) {
                                     Ok(()) => output_lines
                                         .push("✓ Copied selected failure (name + message) to clipboard.".to_string()),
                                     Err(_) => output_lines
                                         .push("✗ Could not copy to clipboard.".to_string()),
                                 }
+                                }
                             }
-                        }
-                        KeyCode::Char('r') => {
-                            if !is_running && !failed_tests.is_empty() {
-                                let f = &failed_tests[failed_selection.min(failed_tests.len().saturating_sub(1))];
-                                let fk = build_filter_for_display_names(&[filter_key_for_vstest(&f.name)]);
-                                show_failure_summary = false;
-                                failure_detail_hover = None;
-                                launch_filtered_test_run(
-                                    fk,
-                                    "━━━ Re-running 1 failed test… ━━━",
-                                    &run_config,
-                                    &mut output_lines,
-                                    &mut output_rx,
-                                    &mut output_scroll,
-                                    &mut output_follow_tail,
-                                    &mut run_pid,
-                                    &mut run_start,
-                                    &mut run_passed,
-                                    &mut run_failed,
-                                    &mut run_skipped,
-                                    &mut failed_tests,
-                                    &mut show_failure_summary,
-                                    &mut failed_selection,
-                                    &mut failed_detail_scroll,
-                                    &mut is_running,
-                                    &mut show_output_fullscreen,
-                                );
+                            KeyCode::Char('r') => {
+                                if !is_running && !failed_tests.is_empty() {
+                                    let f = &failed_tests[failed_selection
+                                        .min(failed_tests.len().saturating_sub(1))];
+                                    let fk =
+                                        build_filter_for_display_names(&[filter_key_for_vstest(
+                                            &f.name,
+                                        )]);
+                                    show_failure_summary = false;
+                                    failure_detail_hover = None;
+                                    launch_filtered_test_run(
+                                        fk,
+                                        "━━━ Re-running 1 failed test… ━━━",
+                                        &run_config,
+                                        &mut output_lines,
+                                        &mut output_rx,
+                                        &mut output_scroll,
+                                        &mut output_follow_tail,
+                                        &mut run_pid,
+                                        &mut run_start,
+                                        &mut run_passed,
+                                        &mut run_failed,
+                                        &mut run_skipped,
+                                        &mut failed_tests,
+                                        &mut show_failure_summary,
+                                        &mut failed_selection,
+                                        &mut failed_detail_scroll,
+                                        &mut is_running,
+                                        &mut show_output_fullscreen,
+                                    );
+                                }
                             }
-                        }
-                        KeyCode::Char('R') => {
-                            if !is_running && !failed_tests.is_empty() {
-                                let names: Vec<String> = failed_tests.iter().map(|f| f.name.clone()).collect();
-                                let n = names.len();
-                                let fk = build_filter_for_display_names(&names);
-                                show_failure_summary = false;
-                                failure_detail_hover = None;
-                                launch_filtered_test_run(
-                                    fk,
-                                    &format!("━━━ Re-running {n} failed test(s)… ━━━"),
-                                    &run_config,
-                                    &mut output_lines,
-                                    &mut output_rx,
-                                    &mut output_scroll,
-                                    &mut output_follow_tail,
-                                    &mut run_pid,
-                                    &mut run_start,
-                                    &mut run_passed,
-                                    &mut run_failed,
-                                    &mut run_skipped,
-                                    &mut failed_tests,
-                                    &mut show_failure_summary,
-                                    &mut failed_selection,
-                                    &mut failed_detail_scroll,
-                                    &mut is_running,
-                                    &mut show_output_fullscreen,
-                                );
+                            KeyCode::Char('R') => {
+                                if !is_running && !failed_tests.is_empty() {
+                                    let names: Vec<String> =
+                                        failed_tests.iter().map(|f| f.name.clone()).collect();
+                                    let n = names.len();
+                                    let fk = build_filter_for_display_names(&names);
+                                    show_failure_summary = false;
+                                    failure_detail_hover = None;
+                                    launch_filtered_test_run(
+                                        fk,
+                                        &format!("━━━ Re-running {n} failed test(s)… ━━━"),
+                                        &run_config,
+                                        &mut output_lines,
+                                        &mut output_rx,
+                                        &mut output_scroll,
+                                        &mut output_follow_tail,
+                                        &mut run_pid,
+                                        &mut run_start,
+                                        &mut run_passed,
+                                        &mut run_failed,
+                                        &mut run_skipped,
+                                        &mut failed_tests,
+                                        &mut show_failure_summary,
+                                        &mut failed_selection,
+                                        &mut failed_detail_scroll,
+                                        &mut is_running,
+                                        &mut show_output_fullscreen,
+                                    );
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                        continue;
                     }
-                    continue;
-                }
 
-                if show_config {
-                    let debounce_clamp = |v: u32| v.clamp(200, 20_000);
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Enter => {
-                            show_config = false;
-                            run_config.manual_watch_delay_ms = debounce_clamp(run_config.manual_watch_delay_ms);
-                            run_config.save();
-                            apply_manual_watch_config(&root_dir, &run_config, &mut manual_watch_handle);
-                        }
-                        KeyCode::Up => {
-                            if config_cursor > 0 {
-                                config_cursor -= 1;
-                            }
-                        }
-                        KeyCode::Down => {
-                            if config_cursor < 5 {
-                                config_cursor += 1;
-                            }
-                        }
-                        KeyCode::Left => {
-                            if config_cursor == 5 {
-                                run_config.manual_watch_delay_ms = debounce_clamp(
-                                    run_config.manual_watch_delay_ms.saturating_sub(200),
+                    if show_config {
+                        let debounce_clamp = |v: u32| v.clamp(200, 20_000);
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Enter => {
+                                show_config = false;
+                                run_config.manual_watch_delay_ms =
+                                    debounce_clamp(run_config.manual_watch_delay_ms);
+                                run_config.save();
+                                apply_manual_watch_config(
+                                    &root_dir,
+                                    &run_config,
+                                    &mut manual_watch_handle,
                                 );
                             }
-                        }
-                        KeyCode::Right => {
-                            if config_cursor == 5 {
-                                run_config.manual_watch_delay_ms = debounce_clamp(
-                                    (run_config.manual_watch_delay_ms + 200).min(20_000),
-                                );
+                            KeyCode::Up => {
+                                if config_cursor > 0 {
+                                    config_cursor -= 1;
+                                }
                             }
-                        }
-                        KeyCode::Char(' ') => {
-                            match config_cursor {
+                            KeyCode::Down => {
+                                if config_cursor < 5 {
+                                    config_cursor += 1;
+                                }
+                            }
+                            KeyCode::Left => {
+                                if config_cursor == 5 {
+                                    run_config.manual_watch_delay_ms = debounce_clamp(
+                                        run_config.manual_watch_delay_ms.saturating_sub(200),
+                                    );
+                                }
+                            }
+                            KeyCode::Right => {
+                                if config_cursor == 5 {
+                                    run_config.manual_watch_delay_ms = debounce_clamp(
+                                        (run_config.manual_watch_delay_ms + 200).min(20_000),
+                                    );
+                                }
+                            }
+                            KeyCode::Char(' ') => match config_cursor {
                                 0 => run_config.no_build = !run_config.no_build,
                                 1 => run_config.no_restore = !run_config.no_restore,
                                 2 => {
@@ -972,15 +1056,18 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                     };
                                 }
                                 3 => {
-                                    run_config.output_mode = if run_config.output_mode == OutputMode::Split {
-                                        OutputMode::Fullscreen
-                                    } else {
-                                        OutputMode::Split
-                                    };
+                                    run_config.output_mode =
+                                        if run_config.output_mode == OutputMode::Split {
+                                            OutputMode::Fullscreen
+                                        } else {
+                                            OutputMode::Split
+                                        };
                                 }
                                 4 => {
-                                    run_config.manual_watch_enabled = !run_config.manual_watch_enabled;
-                                    run_config.manual_watch_delay_ms = debounce_clamp(run_config.manual_watch_delay_ms);
+                                    run_config.manual_watch_enabled =
+                                        !run_config.manual_watch_enabled;
+                                    run_config.manual_watch_delay_ms =
+                                        debounce_clamp(run_config.manual_watch_delay_ms);
                                     apply_manual_watch_config(
                                         &root_dir,
                                         &run_config,
@@ -989,299 +1076,324 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
                                 }
                                 5 => {}
                                 _ => {}
-                            }
+                            },
+                            _ => {}
                         }
-                        _ => {}
+                        continue;
                     }
-                    continue;
-                }
 
-                if is_running {
-                    match key.code {
-                        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            show_failure_summary = true;
-                            if failed_tests.is_empty() {
-                                
-                                failed_selection = 0;
-                            } else {
-                                failed_selection = failed_selection.min(failed_tests.len() - 1);
+                    if is_running {
+                        match key.code {
+                            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                show_failure_summary = true;
+                                if failed_tests.is_empty() {
+                                    failed_selection = 0;
+                                } else {
+                                    failed_selection = failed_selection.min(failed_tests.len() - 1);
+                                }
+                                failed_detail_scroll = 0;
+                                failure_detail_hover = None;
                             }
-                            failed_detail_scroll = 0;
-                            failure_detail_hover = None;
-                        }
-                        KeyCode::PageUp => {
-                            if show_output_panel {
-                                output_follow_tail = false;
-                                output_scroll = output_scroll.saturating_sub(5);
+                            KeyCode::PageUp => {
+                                if show_output_panel {
+                                    output_follow_tail = false;
+                                    output_scroll = output_scroll.saturating_sub(5);
+                                }
                             }
-                        }
-                        KeyCode::PageDown => {
-                            if show_output_panel {
-                                output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
-                                output_follow_tail = output_scroll >= output_scroll_max;
+                            KeyCode::PageDown => {
+                                if show_output_panel {
+                                    output_scroll =
+                                        output_scroll.saturating_add(5).min(output_scroll_max);
+                                    output_follow_tail = output_scroll >= output_scroll_max;
+                                }
                             }
-                        }
-                        KeyCode::Home => {
-                            if show_output_panel {
-                                output_follow_tail = false;
-                                output_scroll = 0;
+                            KeyCode::Home => {
+                                if show_output_panel {
+                                    output_follow_tail = false;
+                                    output_scroll = 0;
+                                }
                             }
-                        }
-                        KeyCode::End => {
-                            if show_output_panel {
-                                output_follow_tail = true;
-                                output_scroll = output_scroll_max;
+                            KeyCode::End => {
+                                if show_output_panel {
+                                    output_follow_tail = true;
+                                    output_scroll = output_scroll_max;
+                                }
                             }
-                        }
-                        KeyCode::Esc => {
-                            if let Some(pid) = run_pid.take() {
-                                kill_process(pid);
+                            KeyCode::Esc => {
+                                if let Some(pid) = run_pid.take() {
+                                    kill_process(pid);
+                                }
+                                is_running = false;
+                                let elapsed = run_start
+                                    .map(|s| format_elapsed(s.elapsed()))
+                                    .unwrap_or_default();
+                                output_lines.push(String::new());
+                                output_lines.push(format!("⚠ Cancelled ({})", elapsed));
+                                output_rx = None;
                             }
-                            is_running = false;
-                            let elapsed = run_start.map(|s| format_elapsed(s.elapsed())).unwrap_or_default();
-                            output_lines.push(String::new());
-                            output_lines.push(format!("⚠ Cancelled ({})", elapsed));
-                            output_rx = None;
+                            _ => {}
                         }
-                        _ => {}
+                        continue;
                     }
-                    continue;
-                }
 
-                if show_output_fullscreen {
-                    match key.code {
-                        KeyCode::PageUp => {
-                            if show_output_panel {
-                                output_follow_tail = false;
-                                output_scroll = output_scroll.saturating_sub(5);
+                    if show_output_fullscreen {
+                        match key.code {
+                            KeyCode::PageUp => {
+                                if show_output_panel {
+                                    output_follow_tail = false;
+                                    output_scroll = output_scroll.saturating_sub(5);
+                                }
                             }
-                        }
-                        KeyCode::PageDown => {
-                            if show_output_panel {
-                                output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
-                                output_follow_tail = output_scroll >= output_scroll_max;
+                            KeyCode::PageDown => {
+                                if show_output_panel {
+                                    output_scroll =
+                                        output_scroll.saturating_add(5).min(output_scroll_max);
+                                    output_follow_tail = output_scroll >= output_scroll_max;
+                                }
                             }
-                        }
-                        KeyCode::Home => {
-                            if show_output_panel {
-                                output_follow_tail = false;
-                                output_scroll = 0;
+                            KeyCode::Home => {
+                                if show_output_panel {
+                                    output_follow_tail = false;
+                                    output_scroll = 0;
+                                }
                             }
-                        }
-                        KeyCode::End => {
-                            if show_output_panel {
-                                output_follow_tail = true;
-                                output_scroll = output_scroll_max;
+                            KeyCode::End => {
+                                if show_output_panel {
+                                    output_follow_tail = true;
+                                    output_scroll = output_scroll_max;
+                                }
                             }
+                            KeyCode::Esc => {
+                                show_output_fullscreen = false;
+                            }
+                            _ => {}
                         }
-                        KeyCode::Esc => {
-                            show_output_fullscreen = false;
+                        continue;
+                    }
+
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('a')
+                    {
+                        let any_leaf_selected = tree.iter().any(|n| n.is_leaf && n.is_selected);
+                        let to_state = !any_leaf_selected;
+                        for node in tree.iter_mut() {
+                            node.is_selected = to_state;
                         }
-                        _ => {}
+                        continue;
                     }
-                    continue;
-                }
 
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('a') {
-                    let any_leaf_selected = tree.iter().any(|n| n.is_leaf && n.is_selected);
-                    let to_state = !any_leaf_selected;
-                    for node in tree.iter_mut() { node.is_selected = to_state; }
-                    continue;
-                }
-
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('e') {
-                    show_failure_summary = true;
-                    if failed_tests.is_empty() {
-                        failed_selection = 0;
-                    } else {
-                        failed_selection = failed_selection.min(failed_tests.len() - 1);
-                    }
-                    failed_detail_scroll = 0;
-                    failure_detail_hover = None;
-                    continue;
-                }
-
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
-                    show_config = true;
-                    config_cursor = 0;
-                    continue;
-                }
-
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && matches!(key.code, KeyCode::Char('w' | 'W'))
-                {
-                    run_config.manual_watch_enabled = !run_config.manual_watch_enabled;
-                    run_config.manual_watch_delay_ms = run_config.manual_watch_delay_ms.clamp(200, 20_000);
-                    apply_manual_watch_config(&root_dir, &run_config, &mut manual_watch_handle);
-                    run_config.save();
-                    if run_config.manual_watch_enabled {
-                        output_lines.push("✓ Manual watch ON — checked tests re-run when you save `.cs` files.".to_string());
-                    } else {
-                        output_lines.push("○ Manual watch OFF.".to_string());
-                    }
-                    continue;
-                }
-
-                if key.code == KeyCode::F(5) {
-                    output_lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string());
-                    output_lines.push("🔄 Rediscovering tests (building if needed)... please wait.".to_string());
-
-                    if let Ok(tests) = discover_tests(false, run_config.no_restore) {
-                        let _ = super::discovery_cache::save_discovery_cache(&tests);
-                        *tree = build_flat_tree(&tests);
-                        state.select(Some(0));
-                        search_query.clear();
-                        let total: usize = tests.iter().map(|(_, _, c)| c).sum();
-                        output_lines.push(format!("✓ Found {} tests ({} methods).", total, tests.len()));
-                    } else {
-                        output_lines.push("✗ Failed to discover tests.".to_string());
-                    }
-                    continue;
-                }
-
-                if key.code == KeyCode::Char('?') || key.code == KeyCode::F(1) {
-                    show_help = true;
-                    continue;
-                }
-
-                match key.code {
-                    KeyCode::PageUp => {
-                        if show_output_panel {
-                            output_follow_tail = false;
-                            output_scroll = output_scroll.saturating_sub(5);
-                        }
-                    }
-                    KeyCode::PageDown => {
-                        if show_output_panel {
-                            output_scroll = output_scroll.saturating_add(5).min(output_scroll_max);
-                            output_follow_tail = output_scroll >= output_scroll_max;
-                        }
-                    }
-                    KeyCode::Home => {
-                        if show_output_panel {
-                            output_follow_tail = false;
-                            output_scroll = 0;
-                        }
-                    }
-                    KeyCode::End => {
-                        if show_output_panel {
-                            output_follow_tail = true;
-                            output_scroll = output_scroll_max;
-                        }
-                    }
-                    KeyCode::Esc => {
-                        if !search_query.is_empty() {
-                            search_query.clear();
-                            state.select(Some(0));
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('e')
+                    {
+                        show_failure_summary = true;
+                        if failed_tests.is_empty() {
+                            failed_selection = 0;
                         } else {
-                            break;
+                            failed_selection = failed_selection.min(failed_tests.len() - 1);
                         }
+                        failed_detail_scroll = 0;
+                        failure_detail_hover = None;
+                        continue;
                     }
 
-                    KeyCode::Enter => {
-                        let filter = build_filter(tree);
-                        if let Some(filter_str) = filter {
-                            let sel_count: usize = tree
-                                .iter()
-                                .filter(|n| n.is_leaf && n.is_selected)
-                                .map(|n| n.test_count)
-                                .sum();
-                            let heading = format!("━━━ Running {sel_count} selected test(s)… ━━━");
-                            failure_detail_hover = None;
-                            launch_filtered_test_run(
-                                filter_str,
-                                &heading,
-                                &run_config,
-                                &mut output_lines,
-                                &mut output_rx,
-                                &mut output_scroll,
-                                &mut output_follow_tail,
-                                &mut run_pid,
-                                &mut run_start,
-                                &mut run_passed,
-                                &mut run_failed,
-                                &mut run_skipped,
-                                &mut failed_tests,
-                                &mut show_failure_summary,
-                                &mut failed_selection,
-                                &mut failed_detail_scroll,
-                                &mut is_running,
-                                &mut show_output_fullscreen,
-                            );
-                        }
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('p')
+                    {
+                        show_config = true;
+                        config_cursor = 0;
+                        continue;
                     }
 
-                    KeyCode::Up => {
-                        if !visible_indices.is_empty() {
-                            let i = match state.selected() {
-                                Some(0) | None => visible_indices.len() - 1,
-                                Some(i) => i - 1,
-                            };
-                            state.select(Some(i));
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('w' | 'W'))
+                    {
+                        run_config.manual_watch_enabled = !run_config.manual_watch_enabled;
+                        run_config.manual_watch_delay_ms =
+                            run_config.manual_watch_delay_ms.clamp(200, 20_000);
+                        apply_manual_watch_config(&root_dir, &run_config, &mut manual_watch_handle);
+                        run_config.save();
+                        if run_config.manual_watch_enabled {
+                            output_lines.push("✓ Manual watch ON — checked tests re-run when you save `.cs` files.".to_string());
+                        } else {
+                            output_lines.push("○ Manual watch OFF.".to_string());
                         }
+                        continue;
                     }
-                    KeyCode::Down => {
-                        if !visible_indices.is_empty() {
-                            let i = match state.selected() {
-                                Some(i) if i >= visible_indices.len() - 1 => 0,
-                                Some(i) => i + 1,
-                                None => 0,
-                            };
-                            state.select(Some(i));
+
+                    if key.code == KeyCode::F(5) {
+                        output_lines.push(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                .to_string(),
+                        );
+                        output_lines.push(
+                            "🔄 Rediscovering tests (building if needed)... please wait."
+                                .to_string(),
+                        );
+
+                        if let Ok(tests) = discover_tests(false, run_config.no_restore) {
+                            let _ = super::discovery_cache::save_discovery_cache(&tests);
+                            *tree = build_flat_tree(&tests);
+                            state.select(Some(0));
+                            search_query.clear();
+                            let total: usize = tests.iter().map(|(_, _, c)| c).sum();
+                            output_lines.push(format!(
+                                "✓ Found {} tests ({} methods).",
+                                total,
+                                tests.len()
+                            ));
+                        } else {
+                            output_lines.push("✗ Failed to discover tests.".to_string());
                         }
+                        continue;
                     }
-                    KeyCode::Left => {
-                        if let Some(di) = state.selected() {
-                            if di < visible_indices.len() {
-                                let ri = visible_indices[di];
-                                if !tree[ri].is_leaf && tree[ri].is_expanded {
-                                    tree[ri].is_expanded = false;
-                                } else if let Some(pi) = tree[ri].parent_idx {
-                                    if let Some(pdi) = visible_indices.iter().position(|&r| r == pi) {
-                                        state.select(Some(pdi));
+
+                    if key.code == KeyCode::Char('?') || key.code == KeyCode::F(1) {
+                        show_help = true;
+                        continue;
+                    }
+
+                    match key.code {
+                        KeyCode::PageUp => {
+                            if show_output_panel {
+                                output_follow_tail = false;
+                                output_scroll = output_scroll.saturating_sub(5);
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            if show_output_panel {
+                                output_scroll =
+                                    output_scroll.saturating_add(5).min(output_scroll_max);
+                                output_follow_tail = output_scroll >= output_scroll_max;
+                            }
+                        }
+                        KeyCode::Home => {
+                            if show_output_panel {
+                                output_follow_tail = false;
+                                output_scroll = 0;
+                            }
+                        }
+                        KeyCode::End => {
+                            if show_output_panel {
+                                output_follow_tail = true;
+                                output_scroll = output_scroll_max;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            if !search_query.is_empty() {
+                                search_query.clear();
+                                state.select(Some(0));
+                            } else {
+                                break;
+                            }
+                        }
+
+                        KeyCode::Enter => {
+                            let filter = build_filter(tree);
+                            if let Some(filter_str) = filter {
+                                let sel_count: usize = tree
+                                    .iter()
+                                    .filter(|n| n.is_leaf && n.is_selected)
+                                    .map(|n| n.test_count)
+                                    .sum();
+                                let heading =
+                                    format!("━━━ Running {sel_count} selected test(s)… ━━━");
+                                failure_detail_hover = None;
+                                launch_filtered_test_run(
+                                    filter_str,
+                                    &heading,
+                                    &run_config,
+                                    &mut output_lines,
+                                    &mut output_rx,
+                                    &mut output_scroll,
+                                    &mut output_follow_tail,
+                                    &mut run_pid,
+                                    &mut run_start,
+                                    &mut run_passed,
+                                    &mut run_failed,
+                                    &mut run_skipped,
+                                    &mut failed_tests,
+                                    &mut show_failure_summary,
+                                    &mut failed_selection,
+                                    &mut failed_detail_scroll,
+                                    &mut is_running,
+                                    &mut show_output_fullscreen,
+                                );
+                            }
+                        }
+
+                        KeyCode::Up => {
+                            if !visible_indices.is_empty() {
+                                let i = match state.selected() {
+                                    Some(0) | None => visible_indices.len() - 1,
+                                    Some(i) => i - 1,
+                                };
+                                state.select(Some(i));
+                            }
+                        }
+                        KeyCode::Down => {
+                            if !visible_indices.is_empty() {
+                                let i = match state.selected() {
+                                    Some(i) if i >= visible_indices.len() - 1 => 0,
+                                    Some(i) => i + 1,
+                                    None => 0,
+                                };
+                                state.select(Some(i));
+                            }
+                        }
+                        KeyCode::Left => {
+                            if let Some(di) = state.selected() {
+                                if di < visible_indices.len() {
+                                    let ri = visible_indices[di];
+                                    if !tree[ri].is_leaf && tree[ri].is_expanded {
+                                        tree[ri].is_expanded = false;
+                                    } else if let Some(pi) = tree[ri].parent_idx {
+                                        if let Some(pdi) =
+                                            visible_indices.iter().position(|&r| r == pi)
+                                        {
+                                            state.select(Some(pdi));
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    KeyCode::Right => {
-                        if let Some(di) = state.selected() {
-                            if di < visible_indices.len() {
-                                let ri = visible_indices[di];
-                                if !tree[ri].is_leaf && !tree[ri].is_expanded {
-                                    tree[ri].is_expanded = true;
+                        KeyCode::Right => {
+                            if let Some(di) = state.selected() {
+                                if di < visible_indices.len() {
+                                    let ri = visible_indices[di];
+                                    if !tree[ri].is_leaf && !tree[ri].is_expanded {
+                                        tree[ri].is_expanded = true;
+                                    }
                                 }
                             }
                         }
-                    }
-                    KeyCode::Char(' ') => {
-                        if let Some(di) = state.selected() {
-                            if di < visible_indices.len() {
-                                let ri = visible_indices[di];
-                                let new_state = !tree[ri].is_selected;
-                                tree[ri].is_selected = new_state;
-                                let mut j = ri + 1;
-                                while j < tree.len() && tree[j].depth > tree[ri].depth {
-                                    tree[j].is_selected = new_state;
-                                    j += 1;
+                        KeyCode::Char(' ') => {
+                            if let Some(di) = state.selected() {
+                                if di < visible_indices.len() {
+                                    let ri = visible_indices[di];
+                                    let new_state = !tree[ri].is_selected;
+                                    tree[ri].is_selected = new_state;
+                                    let mut j = ri + 1;
+                                    while j < tree.len() && tree[j].depth > tree[ri].depth {
+                                        tree[j].is_selected = new_state;
+                                        j += 1;
+                                    }
+                                    sync_parents(tree);
                                 }
-                                sync_parents(tree);
                             }
                         }
-                    }
-                    KeyCode::Backspace => {
-                        search_query.pop();
-                        state.select(Some(0));
-                    }
-                    KeyCode::Char(c) => {
-                        if c.is_alphanumeric() || c.is_ascii_punctuation() || c == ' ' {
-                            search_query.push(c);
+                        KeyCode::Backspace => {
+                            search_query.pop();
                             state.select(Some(0));
                         }
+                        KeyCode::Char(c) => {
+                            if c.is_alphanumeric() || c.is_ascii_punctuation() || c == ' ' {
+                                search_query.push(c);
+                                state.select(Some(0));
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
                 _ => {}
             }
         }
@@ -1291,7 +1403,11 @@ pub(super) fn run_interactive_loop(tree: &mut Vec<TreeNode>, mut run_config: Run
         h.stop();
     }
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }

@@ -45,11 +45,7 @@ pub(crate) fn parse_stack_trace_target(line: &str) -> Option<StackTraceTarget> {
     if cfg!(windows) {
         if let Some(rest) = s.strip_prefix('/') {
             // `file:///C:/path` -> `/C:/path` after strip
-            if rest
-                .as_bytes()
-                .get(1)
-                .is_some_and(|b| *b == b':')
-            {
+            if rest.as_bytes().get(1).is_some_and(|b| *b == b':') {
                 s = rest;
             }
         }
@@ -64,10 +60,7 @@ pub(crate) fn parse_stack_trace_target(line: &str) -> Option<StackTraceTarget> {
         s.to_string()
     };
 
-    Some(StackTraceTarget {
-        path,
-        line_number,
-    })
+    Some(StackTraceTarget { path, line_number })
 }
 
 /// Launch the OS default app for a path without blocking the TUI read loop. Blocking
@@ -173,9 +166,13 @@ pub(crate) fn failed_detail_styled_line_with_hover(
             .fg(Color::LightCyan)
             .add_modifier(Modifier::UNDERLINED)
     } else if line.contains("Error Message:") {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else if line.contains("Stack Trace:") {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };

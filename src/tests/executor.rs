@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use crate::core::executor::{
-    strip_params, is_test_attribute, extract_method_name, extract_class_name, enrich, parse_cs_content,
-    build_discovery_entries, format_discovery_failure,
+    build_discovery_entries, enrich, extract_class_name, extract_method_name,
+    format_discovery_failure, is_test_attribute, parse_cs_content, strip_params,
 };
+use std::collections::HashMap;
 
 /// Parametric tests: many `dotnet test -t` lines map to one source method → one leaf, merged count.
 #[test]
@@ -19,18 +19,26 @@ fn test_build_discovery_parametric_collapses_to_one_row() {
     ];
     let class_map = HashMap::new();
     let out = build_discovery_entries(&display_names, &methods, &class_map);
-    assert_eq!(out.len(), 1, "same method, multiple list lines -> one row with merged count");
+    assert_eq!(
+        out.len(),
+        1,
+        "same method, multiple list lines -> one row with merged count"
+    );
     assert_eq!(out[0].2, 3);
 }
 
 /// UTF-8 BOM before `namespace` must not hide the namespace (Visual Studio default for new files).
 #[test]
 fn test_parse_cs_content_utf8_bom_before_namespace() {
-    let content = "\u{feff}namespace Acme.Tests;\npublic class T {\n    [Test] public void M() {}\n}\n";
+    let content =
+        "\u{feff}namespace Acme.Tests;\npublic class T {\n    [Test] public void M() {}\n}\n";
     let mut methods = HashMap::new();
     let mut classes = HashMap::new();
     parse_cs_content(content, "Acme", &mut methods, &mut classes);
-    assert!(methods.contains_key("M"), "method should be found when BOM precedes namespace");
+    assert!(
+        methods.contains_key("M"),
+        "method should be found when BOM precedes namespace"
+    );
     let (_, qc) = &methods["M"][0];
     assert!(
         qc.starts_with("Acme.Tests."),
@@ -54,7 +62,9 @@ Installed SDKs:
     let message = format_discovery_failure(Some(1), "", stderr, true, true, None);
 
     assert!(message.contains("Test discovery failed while running `dotnet test /p:UseSharedCompilation=true /p:BaseOutputPath=bin/dotest/ -t --no-build --no-restore`"));
-    assert!(message.contains("The .NET SDK selected by global.json is not installed or cannot be used"));
+    assert!(
+        message.contains("The .NET SDK selected by global.json is not installed or cannot be used")
+    );
     assert!(message.contains("Install the requested SDK, or update global.json"));
     assert!(message.contains("Requested SDK version: 7.0.101"));
 }
@@ -144,8 +154,14 @@ fn test_build_discovery_duplicate_short_method_names_one_row_per_class() {
     methods.insert(
         "SmokeTest".to_string(),
         vec![
-            ("Imports".to_string(), "Tmly.Test.Imports.ImportRollupTests".to_string()),
-            ("ImportLookupCluesTest".to_string(), "Tmly.Test.Imports.ImportLookupCluesTest".to_string()),
+            (
+                "Imports".to_string(),
+                "Tmly.Test.Imports.ImportRollupTests".to_string(),
+            ),
+            (
+                "ImportLookupCluesTest".to_string(),
+                "Tmly.Test.Imports.ImportLookupCluesTest".to_string(),
+            ),
         ],
     );
     let display_names = vec!["SmokeTest".to_string(), "SmokeTest".to_string()];
@@ -158,20 +174,38 @@ fn test_build_discovery_duplicate_short_method_names_one_row_per_class() {
 #[test]
 fn test_strip_params() {
     // NUnit pattern
-    assert_eq!(strip_params("Namespace.Class.Method(1, 2)"), "Namespace.Class.Method");
-    
+    assert_eq!(
+        strip_params("Namespace.Class.Method(1, 2)"),
+        "Namespace.Class.Method"
+    );
+
     // XUnit pattern with named parameters
-    assert_eq!(strip_params("Namespace.Class.Method(x: 1, s: \"val\")"), "Namespace.Class.Method");
+    assert_eq!(
+        strip_params("Namespace.Class.Method(x: 1, s: \"val\")"),
+        "Namespace.Class.Method"
+    );
 
     // Standard parameterless
-    assert_eq!(strip_params("Namespace.Class.Method"), "Namespace.Class.Method");
+    assert_eq!(
+        strip_params("Namespace.Class.Method"),
+        "Namespace.Class.Method"
+    );
 
     // Complex balanced parens with content
-    assert_eq!(strip_params("Namespace.Class.Method(\"val (with paren)\")"), "Namespace.Class.Method");
+    assert_eq!(
+        strip_params("Namespace.Class.Method(\"val (with paren)\")"),
+        "Namespace.Class.Method"
+    );
 
     // Generic methods
-    assert_eq!(strip_params("Namespace.Class.Method<int>(1)"), "Namespace.Class.Method");
-    assert_eq!(strip_params("Namespace.Class.Method<string>"), "Namespace.Class.Method");
+    assert_eq!(
+        strip_params("Namespace.Class.Method<int>(1)"),
+        "Namespace.Class.Method"
+    );
+    assert_eq!(
+        strip_params("Namespace.Class.Method<string>"),
+        "Namespace.Class.Method"
+    );
 }
 
 #[test]
@@ -182,20 +216,20 @@ fn test_test_attributes() {
     assert!(is_test_attribute("[TestCase]")); // bare
     assert!(is_test_attribute("[TestCaseSource(\"src\")]"));
     assert!(is_test_attribute("[Test, Category(\"Slow\")]"));
-    
+
     // XUnit specific
     assert!(is_test_attribute("[Fact]"));
     assert!(is_test_attribute("[Theory]"));
-    
+
     // MSTest specific
     assert!(is_test_attribute("[TestMethod]"));
     assert!(is_test_attribute("[DataRow(1)]"));
-    
+
     // Robustness: spaces inside brackets
     assert!(is_test_attribute("[ Test]"));
     assert!(is_test_attribute("[Test ]"));
     assert!(is_test_attribute("[ TestCase(1) ]"));
-    
+
     // Safety
     assert!(!is_test_attribute("[Tast]")); // typo
     assert!(!is_test_attribute("Just text [Test]")); // not starting with [
@@ -207,22 +241,27 @@ fn test_extract_method_name() {
         // NUnit/XUnit Standard
         ("public void SimpleTest()", "SimpleTest"),
         ("public async Task AsyncTest(int x)", "AsyncTest"),
-        ("internal static void InternalStaticTest()", "InternalStaticTest"),
-        
+        (
+            "internal static void InternalStaticTest()",
+            "InternalStaticTest",
+        ),
         // NUnit Generic
-        ("public void GenericTest<T>()", "GenericTest"), 
+        ("public void GenericTest<T>()", "GenericTest"),
         // NUnit Generic + Params
         ("public void GenericParam<T>(T obj)", "GenericParam"),
-        
         // XUnit Theory
         ("public void Test1(int i)", "Test1"),
-
         // Tricky spaces
         ("public  void   WeirdSpaces (  ) ", "WeirdSpaces"),
     ];
 
     for (line, expected) in cases {
-        assert_eq!(extract_method_name(line).unwrap(), expected, "Failed on: {}", line);
+        assert_eq!(
+            extract_method_name(line).unwrap(),
+            expected,
+            "Failed on: {}",
+            line
+        );
     }
 
     // Keywords should be ignored cleanly
@@ -232,13 +271,28 @@ fn test_extract_method_name() {
 
 #[test]
 fn test_extract_class_name() {
-    assert_eq!(extract_class_name("class SimpleClass").unwrap(), "SimpleClass");
-    assert_eq!(extract_class_name("public class PubClass").unwrap(), "PubClass");
-    assert_eq!(extract_class_name("internal sealed class SealedClass").unwrap(), "SealedClass");
-    assert_eq!(extract_class_name("public abstract partial class PartialClass").unwrap(), "PartialClass");
-    
+    assert_eq!(
+        extract_class_name("class SimpleClass").unwrap(),
+        "SimpleClass"
+    );
+    assert_eq!(
+        extract_class_name("public class PubClass").unwrap(),
+        "PubClass"
+    );
+    assert_eq!(
+        extract_class_name("internal sealed class SealedClass").unwrap(),
+        "SealedClass"
+    );
+    assert_eq!(
+        extract_class_name("public abstract partial class PartialClass").unwrap(),
+        "PartialClass"
+    );
+
     // Space spacing glitch that existed before
-    assert_eq!(extract_class_name("public  class  SpacesClass  {").unwrap(), "SpacesClass");
+    assert_eq!(
+        extract_class_name("public  class  SpacesClass  {").unwrap(),
+        "SpacesClass"
+    );
 }
 
 #[test]
@@ -248,7 +302,10 @@ fn test_enrich_tree_generation() {
 
     // Scenario 1: standard setup where discovering maps correctly
     class_map.insert("LoginTests".to_string(), "Backend.Auth".to_string());
-    method_map.insert("TestValidLogin".to_string(), ("Backend.Auth".to_string(), "LoginTests".to_string()));
+    method_map.insert(
+        "TestValidLogin".to_string(),
+        ("Backend.Auth".to_string(), "LoginTests".to_string()),
+    );
 
     // NUnit & XUnit fully qualified output: MyProject.Backend.Auth.LoginTests.TestValidLogin
     let fqn = "MyProject.Backend.Auth.LoginTests.TestValidLogin";
@@ -258,10 +315,16 @@ fn test_enrich_tree_generation() {
 
     // Scenario 2: empty folder (files at project root)
     class_map.insert("RootTests".to_string(), "".to_string());
-    method_map.insert("RootMethod".to_string(), ("".to_string(), "RootTests".to_string()));
+    method_map.insert(
+        "RootMethod".to_string(),
+        ("".to_string(), "RootTests".to_string()),
+    );
 
     let fqn_root = "Project.RootTests.RootMethod";
-    assert_eq!(enrich(fqn_root, &method_map, &class_map), "RootTests.RootMethod");
+    assert_eq!(
+        enrich(fqn_root, &method_map, &class_map),
+        "RootTests.RootMethod"
+    );
 }
 
 #[test]
@@ -269,28 +332,65 @@ fn test_enrich_strips_namespace_for_deep_path() {
     let mut method_map = HashMap::new();
     let mut class_map = HashMap::new();
 
-    class_map.insert("IfWorkedRuleTests".to_string(), "Conversion.Rules".to_string());
-    method_map.insert("GroupingRule_Simple".to_string(), ("Conversion.Rules".to_string(), "IfWorkedRuleTests".to_string()));
-    method_map.insert("IfWorkedRule_TopUpTest".to_string(), ("Conversion.Rules".to_string(), "IfWorkedRuleTests".to_string()));
-    method_map.insert("FlatRate_SingleHour".to_string(), ("Conversion.Rules".to_string(), "IfWorkedRuleTests".to_string()));
+    class_map.insert(
+        "IfWorkedRuleTests".to_string(),
+        "Conversion.Rules".to_string(),
+    );
+    method_map.insert(
+        "GroupingRule_Simple".to_string(),
+        (
+            "Conversion.Rules".to_string(),
+            "IfWorkedRuleTests".to_string(),
+        ),
+    );
+    method_map.insert(
+        "IfWorkedRule_TopUpTest".to_string(),
+        (
+            "Conversion.Rules".to_string(),
+            "IfWorkedRuleTests".to_string(),
+        ),
+    );
+    method_map.insert(
+        "FlatRate_SingleHour".to_string(),
+        (
+            "Conversion.Rules".to_string(),
+            "IfWorkedRuleTests".to_string(),
+        ),
+    );
 
     let fqn = "Tmly.Test.Conversion.Rules.IfWorkedRuleTests.GroupingRule_Simple";
     let enriched = enrich(fqn, &method_map, &class_map);
 
-    assert_eq!(enriched, "Conversion.Rules.IfWorkedRuleTests.GroupingRule_Simple",
-        "Namespace prefix should be stripped; tests should NOT appear detached");
+    assert_eq!(
+        enriched, "Conversion.Rules.IfWorkedRuleTests.GroupingRule_Simple",
+        "Namespace prefix should be stripped; tests should NOT appear detached"
+    );
 
     let fqn2 = "Tmly.Test.Conversion.Rules.IfWorkedRuleTests.FlatRate_SingleHour";
-    assert_eq!(enrich(fqn2, &method_map, &class_map), "Conversion.Rules.IfWorkedRuleTests.FlatRate_SingleHour");
+    assert_eq!(
+        enrich(fqn2, &method_map, &class_map),
+        "Conversion.Rules.IfWorkedRuleTests.FlatRate_SingleHour"
+    );
 
     let fqn3 = "Tmly.Test.Conversion.Rules.IfWorkedRuleTests.GetLookBackDate_ForTopUp_WorksOkWithTimesheetImpact";
-    assert_eq!(enrich(fqn3, &method_map, &class_map),
-        "Conversion.Rules.IfWorkedRuleTests.GetLookBackDate_ForTopUp_WorksOkWithTimesheetImpact");
+    assert_eq!(
+        enrich(fqn3, &method_map, &class_map),
+        "Conversion.Rules.IfWorkedRuleTests.GetLookBackDate_ForTopUp_WorksOkWithTimesheetImpact"
+    );
 
     // Generic method in display name should match non-generic in source map
     let fqn_gen = "Tmly.Test.Conversion.Rules.IfWorkedRuleTests.GenericMethod<int>";
-    method_map.insert("GenericMethod".to_string(), ("Conversion.Rules".to_string(), "IfWorkedRuleTests".to_string()));
-    assert_eq!(enrich(fqn_gen, &method_map, &class_map), "Conversion.Rules.IfWorkedRuleTests.GenericMethod<int>");
+    method_map.insert(
+        "GenericMethod".to_string(),
+        (
+            "Conversion.Rules".to_string(),
+            "IfWorkedRuleTests".to_string(),
+        ),
+    );
+    assert_eq!(
+        enrich(fqn_gen, &method_map, &class_map),
+        "Conversion.Rules.IfWorkedRuleTests.GenericMethod<int>"
+    );
 }
 #[test]
 fn test_enrich_simple_class_dot_method() {
@@ -298,14 +398,23 @@ fn test_enrich_simple_class_dot_method() {
     let mut class_map = HashMap::new();
 
     class_map.insert("SimpleTests".to_string(), "Unit".to_string());
-    method_map.insert("TestOne".to_string(), ("Unit".to_string(), "SimpleTests".to_string()));
+    method_map.insert(
+        "TestOne".to_string(),
+        ("Unit".to_string(), "SimpleTests".to_string()),
+    );
 
     // Simple case: ClassName.Method (no namespace prefix)
-    assert_eq!(enrich("SimpleTests.TestOne", &method_map, &class_map), "Unit.SimpleTests.TestOne");
+    assert_eq!(
+        enrich("SimpleTests.TestOne", &method_map, &class_map),
+        "Unit.SimpleTests.TestOne"
+    );
 
     // No folder
     class_map.insert("RootTests".to_string(), "".to_string());
-    assert_eq!(enrich("RootTests.TestOne", &method_map, &class_map), "RootTests.TestOne");
+    assert_eq!(
+        enrich("RootTests.TestOne", &method_map, &class_map),
+        "RootTests.TestOne"
+    );
 }
 
 #[test]
@@ -357,21 +466,42 @@ public class IfWorkedRuleTests : ConversionRuleTests {
     parse_cs_content(content, "Conversion.Rules", &mut methods, &mut classes);
 
     // Should find the class
-    assert!(classes.contains_key("IfWorkedRuleTests"), "Should find IfWorkedRuleTests class");
+    assert!(
+        classes.contains_key("IfWorkedRuleTests"),
+        "Should find IfWorkedRuleTests class"
+    );
     assert_eq!(classes["IfWorkedRuleTests"], "Conversion.Rules");
 
     // Should find all test methods
-    assert!(methods.contains_key("GroupingRule_Simple"), "Should find GroupingRule_Simple");
-    assert!(methods.contains_key("IfWorkedRule_TwoPlacements_SameDay"), "Should find IfWorkedRule_TwoPlacements_SameDay");
-    assert!(methods.contains_key("FlatRate_SingleHour"), "Should find inline FlatRate_SingleHour");
-    assert!(methods.contains_key("FlatRate_MultiHour"), "Should find inline FlatRate_MultiHour");
-    assert!(methods.contains_key("IfWorkedRule_CurrencyMarkup_CheckPerPlacement_TwoPlacements"),
-        "Should find TestCase-attributed method");
+    assert!(
+        methods.contains_key("GroupingRule_Simple"),
+        "Should find GroupingRule_Simple"
+    );
+    assert!(
+        methods.contains_key("IfWorkedRule_TwoPlacements_SameDay"),
+        "Should find IfWorkedRule_TwoPlacements_SameDay"
+    );
+    assert!(
+        methods.contains_key("FlatRate_SingleHour"),
+        "Should find inline FlatRate_SingleHour"
+    );
+    assert!(
+        methods.contains_key("FlatRate_MultiHour"),
+        "Should find inline FlatRate_MultiHour"
+    );
+    assert!(
+        methods.contains_key("IfWorkedRule_CurrencyMarkup_CheckPerPlacement_TwoPlacements"),
+        "Should find TestCase-attributed method"
+    );
 
     // Verify folder mapping is correct for each method
     let (folder, qc) = &methods["GroupingRule_Simple"][0];
     assert_eq!(folder, "Conversion.Rules");
-    assert!(qc.ends_with(".IfWorkedRuleTests"), "qualified class: {}", qc);
+    assert!(
+        qc.ends_with(".IfWorkedRuleTests"),
+        "qualified class: {}",
+        qc
+    );
 }
 
 #[test]
@@ -398,24 +528,35 @@ public class BreakTests {
     let mut classes = HashMap::new();
     parse_cs_content(content, "Integration", &mut methods, &mut classes);
 
-    assert!(classes.contains_key("BreakTests"), "Should find BreakTests class");
+    assert!(
+        classes.contains_key("BreakTests"),
+        "Should find BreakTests class"
+    );
 
     // [Test] // url-comment  =>  method on next line must still be found
-    assert!(methods.contains_key("AdjustmentLines_AreIgnoredWhenValidatingBreaks"),
-        "Method after [Test] // comment should NOT be detached");
+    assert!(
+        methods.contains_key("AdjustmentLines_AreIgnoredWhenValidatingBreaks"),
+        "Method after [Test] // comment should NOT be detached"
+    );
 
     // [TestCase(...)] // comment  (two of them)  =>  method on the line after must be found
-    assert!(methods.contains_key("NotifyUserOfInactivatedPurchaseOrder"),
-        "Method after [TestCase] // comment should NOT be detached");
+    assert!(
+        methods.contains_key("NotifyUserOfInactivatedPurchaseOrder"),
+        "Method after [TestCase] // comment should NOT be detached"
+    );
 
     // Plain [Test] still works
-    assert!(methods.contains_key("NormalTest"),
-        "Plain [Test] method should still be found");
+    assert!(
+        methods.contains_key("NormalTest"),
+        "Plain [Test] method should still be found"
+    );
 
     // All should map to the right class and folder
-    for name in &["AdjustmentLines_AreIgnoredWhenValidatingBreaks",
-                   "NotifyUserOfInactivatedPurchaseOrder",
-                   "NormalTest"] {
+    for name in &[
+        "AdjustmentLines_AreIgnoredWhenValidatingBreaks",
+        "NotifyUserOfInactivatedPurchaseOrder",
+        "NormalTest",
+    ] {
         let (folder, qc) = &methods[*name][0];
         assert_eq!(folder, "Integration", "Wrong folder for {}", name);
         assert_eq!(qc, "BreakTests", "Wrong class for {}", name);
@@ -510,19 +651,37 @@ public class OrgTreeTests {
     }
 
     // Count methods per class (qualified class name in source map)
-    let gqh_methods: Vec<_> = methods.iter().filter(|(_, vecs)| {
-        vecs.iter().any(|(_, qc)| qc_is_class(qc, "GroupQueryHandlerTest"))
-    }).collect();
-    let group_methods: Vec<_> = methods.iter().filter(|(_, vecs)| {
-        vecs.iter().any(|(_, qc)| qc_is_class(qc, "GroupTests"))
-    }).collect();
-    let org_methods: Vec<_> = methods.iter().filter(|(_, vecs)| {
-        vecs.iter().any(|(_, qc)| qc_is_class(qc, "OrgTreeTests"))
-    }).collect();
+    let gqh_methods: Vec<_> = methods
+        .iter()
+        .filter(|(_, vecs)| {
+            vecs.iter()
+                .any(|(_, qc)| qc_is_class(qc, "GroupQueryHandlerTest"))
+        })
+        .collect();
+    let group_methods: Vec<_> = methods
+        .iter()
+        .filter(|(_, vecs)| vecs.iter().any(|(_, qc)| qc_is_class(qc, "GroupTests")))
+        .collect();
+    let org_methods: Vec<_> = methods
+        .iter()
+        .filter(|(_, vecs)| vecs.iter().any(|(_, qc)| qc_is_class(qc, "OrgTreeTests")))
+        .collect();
 
-    assert_eq!(gqh_methods.len(), 7, "GroupQueryHandlerTest should have 7 test methods");
-    assert_eq!(group_methods.len(), 3, "GroupTests should have 3 test methods");
-    assert_eq!(org_methods.len(), 3, "OrgTreeTests should have 3 test methods");
+    assert_eq!(
+        gqh_methods.len(),
+        7,
+        "GroupQueryHandlerTest should have 7 test methods"
+    );
+    assert_eq!(
+        group_methods.len(),
+        3,
+        "GroupTests should have 3 test methods"
+    );
+    assert_eq!(
+        org_methods.len(),
+        3,
+        "OrgTreeTests should have 3 test methods"
+    );
 }
 
 #[test]
@@ -534,9 +693,21 @@ fn test_tree_test_count_for_parameterised_tests() {
     // - ParamTest has 5 instances ([TestCase] x5)
     // - AnotherTest has 3 instances
     let tests = vec![
-        ("Folder.MyClass.SimpleTest".to_string(), "Ns.Folder.MyClass.SimpleTest".to_string(), 1),
-        ("Folder.MyClass.ParamTest".to_string(), "Ns.Folder.MyClass.ParamTest".to_string(), 5),
-        ("Folder.MyClass.AnotherTest".to_string(), "Ns.Folder.MyClass.AnotherTest".to_string(), 3),
+        (
+            "Folder.MyClass.SimpleTest".to_string(),
+            "Ns.Folder.MyClass.SimpleTest".to_string(),
+            1,
+        ),
+        (
+            "Folder.MyClass.ParamTest".to_string(),
+            "Ns.Folder.MyClass.ParamTest".to_string(),
+            5,
+        ),
+        (
+            "Folder.MyClass.AnotherTest".to_string(),
+            "Ns.Folder.MyClass.AnotherTest".to_string(),
+            3,
+        ),
     ];
 
     let tree = build_flat_tree(&tests);
@@ -547,7 +718,10 @@ fn test_tree_test_count_for_parameterised_tests() {
 
     // Total test_count across all leaves should be 1+5+3 = 9
     let total: usize = leaves.iter().map(|n| n.test_count).sum();
-    assert_eq!(total, 9, "Total test_count should be 9 (sum of all parameterised variants)");
+    assert_eq!(
+        total, 9,
+        "Total test_count should be 9 (sum of all parameterised variants)"
+    );
 
     // Verify individual counts
     let simple = leaves.iter().find(|n| n.label == "SimpleTest").unwrap();
@@ -562,7 +736,11 @@ fn test_tree_test_count_for_parameterised_tests() {
     // Non-leaf nodes should have test_count = 0
     let non_leaves: Vec<_> = tree.iter().filter(|n| !n.is_leaf).collect();
     for node in &non_leaves {
-        assert_eq!(node.test_count, 0, "Non-leaf '{}' should have test_count=0", node.label);
+        assert_eq!(
+            node.test_count, 0,
+            "Non-leaf '{}' should have test_count=0",
+            node.label
+        );
     }
 }
 
@@ -575,18 +753,26 @@ fn test_build_discovery_fqn_aware_matching() {
     // Source parsing found: Placement_Primary in Tmly.Test.Infrastructure.BaseQueryHelperTests
     methods.insert(
         "Placement_Primary".to_string(),
-        vec![("Infrastructure".to_string(), "Tmly.Test.Infrastructure.BaseQueryHelperTests".to_string())],
+        vec![(
+            "Infrastructure".to_string(),
+            "Tmly.Test.Infrastructure.BaseQueryHelperTests".to_string(),
+        )],
     );
-    
+
     // dotnet test -t returned the FQN
-    let display_names = vec![
-        "Tmly.Test.Infrastructure.BaseQueryHelperTests.Placement_Primary".to_string(),
-    ];
-    
+    let display_names =
+        vec!["Tmly.Test.Infrastructure.BaseQueryHelperTests.Placement_Primary".to_string()];
+
     let class_map = HashMap::new(); // Not needed for FQN match
     let out = build_discovery_entries(&display_names, &methods, &class_map);
-    
+
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].0, "Infrastructure.BaseQueryHelperTests.Placement_Primary", "Should use correct folder-prefixed tree FQN");
-    assert_eq!(out[0].1, "Tmly.Test.Infrastructure.BaseQueryHelperTests.Placement_Primary", "Filter key should be the FQN");
+    assert_eq!(
+        out[0].0, "Infrastructure.BaseQueryHelperTests.Placement_Primary",
+        "Should use correct folder-prefixed tree FQN"
+    );
+    assert_eq!(
+        out[0].1, "Tmly.Test.Infrastructure.BaseQueryHelperTests.Placement_Primary",
+        "Filter key should be the FQN"
+    );
 }

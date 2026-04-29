@@ -1,6 +1,6 @@
-use anyhow::Result;
 use crate::core::executor::discover_tests;
 use crate::core::tree::build_flat_tree;
+use anyhow::Result;
 
 pub(crate) mod config;
 mod discovery_cache;

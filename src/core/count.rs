@@ -35,7 +35,10 @@ pub fn tree_under_prefix(tree: &str, prefix: &str) -> bool {
 }
 
 /// Resolve a short folder label (`Groups`, `Imports`) to the canonical first path segment from data.
-pub fn resolve_short_segment_to_prefix(tests: &[(String, String, usize)], segment: &str) -> Option<String> {
+pub fn resolve_short_segment_to_prefix(
+    tests: &[(String, String, usize)],
+    segment: &str,
+) -> Option<String> {
     let want = segment.trim();
     if want.is_empty() {
         return None;
@@ -58,16 +61,30 @@ mod tests {
 
     #[test]
     fn tree_under_prefix_boundary() {
-        assert!(tree_under_prefix("Tmly.Test.Groups.Foo.Bar", "Tmly.Test.Groups"));
-        assert!(!tree_under_prefix("Tmly.Test.GroupsHelper.Foo", "Tmly.Test.Groups"));
+        assert!(tree_under_prefix(
+            "Tmly.Test.Groups.Foo.Bar",
+            "Tmly.Test.Groups"
+        ));
+        assert!(!tree_under_prefix(
+            "Tmly.Test.GroupsHelper.Foo",
+            "Tmly.Test.Groups"
+        ));
         assert!(tree_under_prefix("Tmly.Test.Groups", "Tmly.Test.Groups"));
     }
 
     #[test]
     fn resolve_segment_finds_top_level_folder() {
         let tests = vec![
-            ("Groups.OrgTreeTests.X".to_string(), "Tmly.Test.Groups.OrgTreeTests.X".to_string(), 1),
-            ("Imports.A.M".to_string(), "Tmly.Test.Imports.A.M".to_string(), 1),
+            (
+                "Groups.OrgTreeTests.X".to_string(),
+                "Tmly.Test.Groups.OrgTreeTests.X".to_string(),
+                1,
+            ),
+            (
+                "Imports.A.M".to_string(),
+                "Tmly.Test.Imports.A.M".to_string(),
+                1,
+            ),
         ];
         let p = resolve_short_segment_to_prefix(&tests, "Groups").unwrap();
         assert_eq!(p, "Groups");

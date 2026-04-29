@@ -1,24 +1,24 @@
+use crate::core::config::Config;
 use anyhow::{bail, Context, Result};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-use crate::core::config::Config;
 
 static SELECTED_TEST_TARGET: OnceLock<Option<String>> = OnceLock::new();
-
 
 /// Returns `(tree_fqn, filter_key, test_count)` triples.
 /// `filter_key` is a VSTest-friendly substring for `FullyQualifiedName~` (typically `Namespace.Class.Method`).
 /// `test_count` is the number of `dotnet test -t` lines for that logical test method.
 pub fn discover_tests(no_build: bool, no_restore: bool) -> Result<Vec<(String, String, usize)>> {
-    let display_names = discover_display_names(no_build, no_restore)?;
+    let target = resolve_test_target(false)?;
+    let display_names = discover_display_names(target.as_deref(), no_build, no_restore)?;
     if display_names.is_empty() {
         return Ok(Vec::new());
     }
 
-    let test_roots = find_test_project_roots(Path::new("."));
-    
+    let test_roots = find_test_project_roots(Path::new("."), target.as_deref());
+
     let mut method_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut class_map = HashMap::new();
     for root in &test_roots {
@@ -32,7 +32,11 @@ pub fn discover_tests(no_build: bool, no_restore: bool) -> Result<Vec<(String, S
         v.sort_by(|a, b| a.1.cmp(&b.1));
     }
 
-    Ok(build_discovery_entries(&display_names, &method_map, &class_map))
+    Ok(build_discovery_entries(
+        &display_names,
+        &method_map,
+        &class_map,
+    ))
 }
 
 /// Maps each `dotnet test -t` line to a source method, merges counts, and builds vstest filter keys.
@@ -54,12 +58,12 @@ pub(crate) fn build_discovery_entries(
 
     for (short_and_class, mut group) in by_short {
         group.sort_by(|a, b| a.1.cmp(&b.1));
-        
+
         // Try to match the display name (FQN) to a source method.
         // The display name from dotnet test -t is usually Namespace.Class.Method
         let parts: Vec<&str> = short_and_class.split('.').collect();
         let method_name = *parts.last().unwrap_or(&short_and_class.as_str());
-        
+
         let cands = methods.get(method_name).cloned().unwrap_or_default();
         if cands.is_empty() {
             continue;
@@ -129,7 +133,10 @@ fn qualified_filter_key(qualified_class: &str, short_method: &str) -> String {
 /// class, then method. VSTest filters use `filter_key` (full qualified class + method) on leaves;
 /// non-leaf filter strings are filled in by `build_flat_tree` after the flat list is built.
 fn tree_fqn_from_qualified(folder: &str, qualified_class: &str, short_method: &str) -> String {
-    let class_simple = qualified_class.rsplit('.').next().unwrap_or(qualified_class);
+    let class_simple = qualified_class
+        .rsplit('.')
+        .next()
+        .unwrap_or(qualified_class);
     if folder.is_empty() {
         format!("{}.{}", class_simple, short_method)
     } else {
@@ -166,8 +173,6 @@ fn extract_namespace_declaration(line: &str) -> Option<String> {
     }
 }
 
-
-
 pub(crate) fn strip_params(s: &str) -> String {
     let mut res = String::new();
     let mut paren_depth: usize = 0;
@@ -178,25 +183,43 @@ pub(crate) fn strip_params(s: &str) -> String {
     for c in s.chars() {
         if escape {
             escape = false;
-            if paren_depth == 0 && angle_depth == 0 { res.push(c); }
+            if paren_depth == 0 && angle_depth == 0 {
+                res.push(c);
+            }
             continue;
         }
         if c == '\\' {
             escape = true;
-            if paren_depth == 0 && angle_depth == 0 { res.push(c); }
+            if paren_depth == 0 && angle_depth == 0 {
+                res.push(c);
+            }
             continue;
         }
         if c == '"' {
             in_string = !in_string;
-            if paren_depth == 0 && angle_depth == 0 { res.push(c); }
+            if paren_depth == 0 && angle_depth == 0 {
+                res.push(c);
+            }
             continue;
         }
 
         if !in_string {
-            if c == '(' { paren_depth += 1; continue; }
-            if c == ')' { paren_depth = paren_depth.saturating_sub(1); continue; }
-            if c == '<' { angle_depth += 1; continue; }
-            if c == '>' { angle_depth = angle_depth.saturating_sub(1); continue; }
+            if c == '(' {
+                paren_depth += 1;
+                continue;
+            }
+            if c == ')' {
+                paren_depth = paren_depth.saturating_sub(1);
+                continue;
+            }
+            if c == '<' {
+                angle_depth += 1;
+                continue;
+            }
+            if c == '>' {
+                angle_depth = angle_depth.saturating_sub(1);
+                continue;
+            }
         }
 
         if paren_depth == 0 && angle_depth == 0 {
@@ -209,8 +232,8 @@ pub(crate) fn strip_params(s: &str) -> String {
 /// Enrich a display‐name base into a `folder.class.method` tree path.
 pub(crate) fn enrich(
     base: &str,
-    method_map: &HashMap<String, (String, String)>,   // method -> (folder, class)
-    class_map:  &HashMap<String, String>,              // class  -> folder
+    method_map: &HashMap<String, (String, String)>, // method -> (folder, class)
+    class_map: &HashMap<String, String>,            // class  -> folder
 ) -> String {
     let parts: Vec<&str> = base.split('.').collect();
 
@@ -257,15 +280,26 @@ pub(crate) fn enrich(
             if let Some(ci) = class_idx {
                 let suffix = parts[ci..].join(".");
                 let folder = &class_map[&strip_params(parts[ci])];
-                if folder.is_empty() { suffix } else { format!("{}.{}", folder, suffix) }
+                if folder.is_empty() {
+                    suffix
+                } else {
+                    format!("{}.{}", folder, suffix)
+                }
             } else {
                 let last = *parts.last().unwrap_or(&base);
                 let last_base = strip_params(last);
                 if let Some((folder, class)) = method_map.get(&last_base) {
                     // If the method map gives us a class name, try to find it in the parts.
-                    if let Some(ci) = parts.iter().position(|&s| strip_params(s) == class.as_str()) {
+                    if let Some(ci) = parts
+                        .iter()
+                        .position(|&s| strip_params(s) == class.as_str())
+                    {
                         let suffix = parts[ci..].join(".");
-                        if folder.is_empty() { suffix } else { format!("{}.{}", folder, suffix) }
+                        if folder.is_empty() {
+                            suffix
+                        } else {
+                            format!("{}.{}", folder, suffix)
+                        }
                     } else if !folder.is_empty() {
                         // If we can't find the class name but have a folder, at least prepend the folder.
                         // But first check if the folder is already a prefix to avoid duplication.
@@ -288,7 +322,12 @@ pub(crate) fn enrich(
 /// Returns (method_map, class_map):
 ///   method_map: short_method_name -> [(relative_folder, qualified_class_name), ...]
 ///   class_map:  simple class_name  -> relative_folder
-fn scan_source_maps(root: &Path) -> (HashMap<String, Vec<(String, String)>>, HashMap<String, String>) {
+fn scan_source_maps(
+    root: &Path,
+) -> (
+    HashMap<String, Vec<(String, String)>>,
+    HashMap<String, String>,
+) {
     let mut method_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut class_map: HashMap<String, String> = HashMap::new();
     walk_cs(root, root, &mut method_map, &mut class_map, 0);
@@ -296,24 +335,31 @@ fn scan_source_maps(root: &Path) -> (HashMap<String, Vec<(String, String)>>, Has
 }
 
 fn walk_cs(
-    root: &Path, dir: &Path,
+    root: &Path,
+    dir: &Path,
     methods: &mut HashMap<String, Vec<(String, String)>>,
     classes: &mut HashMap<String, String>,
     depth: usize,
 ) {
-    if depth > 10 { return; }
-    let rd = match std::fs::read_dir(dir) { Ok(r) => r, Err(_) => return };
+    if depth > 10 {
+        return;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
     for entry in rd.flatten() {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if path.is_dir() {
-            if name.starts_with('.') || name == "obj" || name == "bin" { continue; }
+            if name.starts_with('.') || name == "obj" || name == "bin" {
+                continue;
+            }
             walk_cs(root, &path, methods, classes, depth + 1);
         } else if name.ends_with(".cs") {
             let rel = path.parent().unwrap_or(root);
             let rel = rel.strip_prefix(root).unwrap_or(rel);
-            let dir_str = rel.to_string_lossy()
-                .replace('\\', ".").replace('/', ".");
+            let dir_str = rel.to_string_lossy().replace('\\', ".").replace('/', ".");
             let dir_str = dir_str.trim_matches('.').to_string();
             parse_cs_file(&path, &dir_str, methods, classes);
         }
@@ -321,16 +367,21 @@ fn walk_cs(
 }
 
 fn parse_cs_file(
-    path: &Path, dir_str: &str,
+    path: &Path,
+    dir_str: &str,
     methods: &mut HashMap<String, Vec<(String, String)>>,
     classes: &mut HashMap<String, String>,
 ) {
-    let content = match std::fs::read_to_string(path) { Ok(c) => c, Err(_) => return };
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
     parse_cs_content(&content, dir_str, methods, classes);
 }
 
 pub(crate) fn parse_cs_content(
-    content: &str, dir_str: &str,
+    content: &str,
+    dir_str: &str,
     methods: &mut HashMap<String, Vec<(String, String)>>,
     classes: &mut HashMap<String, String>,
 ) {
@@ -342,7 +393,9 @@ pub(crate) fn parse_cs_content(
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
 
         if let Some(ns) = extract_namespace_declaration(trimmed) {
             namespace = ns;
@@ -363,9 +416,13 @@ pub(crate) fn parse_cs_content(
         }
 
         if has_test_attr {
-            if stripped.is_empty() { continue; }
+            if stripped.is_empty() {
+                continue;
+            }
             // Skip comment-only remainders (e.g. [Test] // url  ->  stripped = "// url")
-            if stripped.starts_with("//") { continue; }
+            if stripped.starts_with("//") {
+                continue;
+            }
 
             if let Some(method_name) = extract_method_name(stripped) {
                 if let Some(ref cls) = current_class {
@@ -374,7 +431,10 @@ pub(crate) fn parse_cs_content(
                     } else {
                         format!("{}.{}", namespace, cls)
                     };
-                    methods.entry(method_name).or_default().push((dir_str.to_string(), qualified));
+                    methods
+                        .entry(method_name)
+                        .or_default()
+                        .push((dir_str.to_string(), qualified));
                 }
             }
             has_test_attr = false;
@@ -390,29 +450,29 @@ pub(crate) fn strip_attributes(mut s: &str) -> &str {
         let mut escape = false;
 
         for (i, c) in s.char_indices() {
-             if escape {
-                 escape = false;
-                 continue;
-             }
-             if c == '\\' {
-                 escape = true;
-                 continue;
-             }
-             if c == '"' {
-                 in_string = !in_string;
-             } else if !in_string {
-                 if c == '[' {
-                     depth += 1;
-                 } else if c == ']' {
-                     depth -= 1;
-                     if depth == 0 {
-                         end_idx = Some(i);
-                         break;
-                     }
-                 }
-             }
+            if escape {
+                escape = false;
+                continue;
+            }
+            if c == '\\' {
+                escape = true;
+                continue;
+            }
+            if c == '"' {
+                in_string = !in_string;
+            } else if !in_string {
+                if c == '[' {
+                    depth += 1;
+                } else if c == ']' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = Some(i);
+                        break;
+                    }
+                }
+            }
         }
-        
+
         if let Some(i) = end_idx {
             s = s[i + 1..].trim();
         } else {
@@ -424,23 +484,34 @@ pub(crate) fn strip_attributes(mut s: &str) -> &str {
 
 pub(crate) fn is_test_attribute(line: &str) -> bool {
     let trimmed = line.trim();
-    if !trimmed.starts_with('[') || !trimmed.contains(']') { return false; }
-    
+    if !trimmed.starts_with('[') || !trimmed.contains(']') {
+        return false;
+    }
+
     // Extract the content inside the FIRST set of brackets and trim it
     let end_bracket = trimmed.find(']').unwrap();
     let content = trimmed[1..end_bracket].trim();
-    
+
     // Check for any known test attribute keywords (case-insensitive for robustness)
     let lower = content.to_lowercase();
     let keywords = [
-        "test", "testcase", "testcasesource", "fact", "theory", 
-        "datarow", "testmethod"
+        "test",
+        "testcase",
+        "testcasesource",
+        "fact",
+        "theory",
+        "datarow",
+        "testmethod",
     ];
-    
+
     for kw in keywords {
-        // Match the keyword either as the whole word or followed by a comma/paren 
+        // Match the keyword either as the whole word or followed by a comma/paren
         // (to handle [Test, Category("Slow")] or [TestCase(1)])
-        if lower == kw || lower.starts_with(&format!("{}(", kw)) || lower.starts_with(&format!("{} (", kw)) || lower.starts_with(&format!("{},", kw)) {
+        if lower == kw
+            || lower.starts_with(&format!("{}(", kw))
+            || lower.starts_with(&format!("{} (", kw))
+            || lower.starts_with(&format!("{},", kw))
+        {
             return true;
         }
     }
@@ -452,7 +523,7 @@ pub(crate) fn is_test_attribute(line: &str) -> bool {
 pub(crate) fn extract_method_name(line: &str) -> Option<String> {
     let paren_idx = line.find('(')?;
     let mut before = line[..paren_idx].trim();
-    
+
     // Handle NUnit generic tests like MyTest<T>()
     if before.ends_with('>') {
         if let Some(angle_idx) = before.rfind('<') {
@@ -461,19 +532,28 @@ pub(crate) fn extract_method_name(line: &str) -> Option<String> {
     }
 
     // Take the last identifier before '(' or '<'
-    let name: String = before.chars().rev()
+    let name: String = before
+        .chars()
+        .rev()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect::<String>()
-        .chars().rev().collect();
+        .chars()
+        .rev()
+        .collect();
 
-    if name.is_empty() { return None; }
+    if name.is_empty() {
+        return None;
+    }
     // Reject C# keywords that look like method calls
     let keywords = [
-        "if", "while", "for", "foreach", "switch", "catch", "using",
-        "lock", "class", "new", "throw", "return", "typeof", "sizeof",
-        "nameof", "default", "await", "get", "set", "where",
+        "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "class", "new",
+        "throw", "return", "typeof", "sizeof", "nameof", "default", "await", "get", "set", "where",
     ];
-    if keywords.contains(&name.as_str()) { None } else { Some(name) }
+    if keywords.contains(&name.as_str()) {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// Extract class name from a `class X` declaration line.
@@ -482,16 +562,23 @@ pub(crate) fn extract_class_name(line: &str) -> Option<String> {
     loop {
         rest = rest.trim_start();
         let stripped = strip_modifier(rest);
-        if stripped == rest { break; }
+        if stripped == rest {
+            break;
+        }
         rest = stripped;
     }
     rest = rest.trim_start();
     if rest.starts_with("class ") {
         let after = rest["class ".len()..].trim_start();
-        let name: String = after.chars()
+        let name: String = after
+            .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();
-        if name.is_empty() { None } else { Some(name) }
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
     } else {
         None
     }
@@ -499,18 +586,46 @@ pub(crate) fn extract_class_name(line: &str) -> Option<String> {
 
 fn strip_modifier(s: &str) -> &str {
     for kw in &[
-        "public", "internal", "protected", "private",
-        "abstract", "sealed", "partial", "static", "readonly", "new", "virtual", "override",
+        "public",
+        "internal",
+        "protected",
+        "private",
+        "abstract",
+        "sealed",
+        "partial",
+        "static",
+        "readonly",
+        "new",
+        "virtual",
+        "override",
     ] {
         if s.starts_with(kw) {
             let after = &s[kw.len()..];
-            if after.starts_with(|c: char| c.is_whitespace()) { return after; }
+            if after.starts_with(|c: char| c.is_whitespace()) {
+                return after;
+            }
         }
     }
     s
 }
 
-fn find_test_project_roots(root: &Path) -> Vec<std::path::PathBuf> {
+fn find_test_project_roots(root: &Path, target: Option<&str>) -> Vec<std::path::PathBuf> {
+    if let Some(target) = target {
+        let target_path = root.join(target);
+        if is_test_project_file(&target_path) {
+            if let Some(parent) = target_path.parent() {
+                return vec![parent.to_path_buf()];
+            }
+        }
+
+        if is_solution_file(&target_path) {
+            let roots = find_test_project_roots_in_solution(&target_path);
+            if !roots.is_empty() {
+                return roots;
+            }
+        }
+    }
+
     let mut results = Vec::new();
     collect_csproj(root, 0, &mut results);
     let mut test_roots = Vec::new();
@@ -527,14 +642,54 @@ fn find_test_project_roots(root: &Path) -> Vec<std::path::PathBuf> {
     test_roots
 }
 
+fn find_test_project_roots_in_solution(solution: &Path) -> Vec<PathBuf> {
+    let content = match std::fs::read_to_string(solution) {
+        Ok(content) => content,
+        Err(_) => return Vec::new(),
+    };
+    let solution_dir = solution.parent().unwrap_or_else(|| Path::new("."));
+    let mut roots = Vec::new();
+
+    for rel_project in extract_csproj_references(&content) {
+        let project = solution_dir.join(rel_project.replace('\\', std::path::MAIN_SEPARATOR_STR));
+        if is_test_project_file(&project) {
+            if let Some(parent) = project.parent() {
+                roots.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn extract_csproj_references(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for quoted in content.split('"') {
+        if let Some(pos) = quoted.find(".csproj") {
+            let end = pos + ".csproj".len();
+            out.push(quoted[..end].to_string());
+        }
+    }
+    out
+}
+
 fn collect_csproj(dir: &Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
-    if depth > 5 { return; }
-    let rd = match std::fs::read_dir(dir) { Ok(r) => r, Err(_) => return };
+    if depth > 5 {
+        return;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
     for entry in rd.flatten() {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if path.is_dir() {
-            if name.starts_with('.') || name == "obj" || name == "bin" { continue; }
+            if name.starts_with('.') || name == "obj" || name == "bin" {
+                continue;
+            }
             collect_csproj(&path, depth + 1, out);
         } else if name.ends_with(".csproj") {
             out.push(path);
@@ -583,16 +738,12 @@ fn collect_solution_or_project_in_dir(dir: &Path) -> Vec<PathBuf> {
         if is_solution_file(&path) || is_project_file(&path) {
             out.push(path);
         }
-    } 
+    }
     out.sort();
     out
 }
 
-fn collect_solution_and_project_files(
-    dir: &Path,
-    depth: usize,
-    out: &mut Vec<PathBuf>,
-) {
+fn collect_solution_and_project_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > 5 {
         return;
     }
@@ -635,13 +786,20 @@ fn prompt_user_for_target(candidates: &[PathBuf], cwd: &Path) -> Result<Option<S
     println!("Multiple solution/project targets were discovered.");
     println!("Select a target to run `dotnet test` against:");
     for (idx, p) in candidates.iter().enumerate() {
-        let rel = p.strip_prefix(cwd).unwrap_or(p).to_string_lossy().replace('\\', "/");
+        let rel = p
+            .strip_prefix(cwd)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .replace('\\', "/");
         println!("  {}. {}", idx + 1, rel);
     }
     println!();
 
     loop {
-        print!("Enter number (1-{}), or press Enter to cancel: ", candidates.len());
+        print!(
+            "Enter number (1-{}), or press Enter to cancel: ",
+            candidates.len()
+        );
         let mut stdout = std::io::stdout();
         let _ = std::io::Write::flush(&mut stdout);
 
@@ -667,7 +825,10 @@ fn prompt_user_for_target(candidates: &[PathBuf], cwd: &Path) -> Result<Option<S
             }
         }
 
-        println!("Invalid selection. Please type a number between 1 and {}.", candidates.len());
+        println!(
+            "Invalid selection. Please type a number between 1 and {}.",
+            candidates.len()
+        );
     }
 }
 
@@ -702,9 +863,12 @@ fn resolve_test_target(no_prompt: bool) -> Result<Option<String>> {
 
     if direct_solutions.len() > 1 {
         let target = if no_prompt {
-            direct_solutions
-                .first()
-                .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+            direct_solutions.first().map(|p| {
+                p.strip_prefix(&cwd)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
         } else {
             prompt_user_for_target(&direct_solutions, &cwd)?
         };
@@ -725,9 +889,12 @@ fn resolve_test_target(no_prompt: bool) -> Result<Option<String>> {
 
     if direct_test_projects.len() > 1 {
         let target = if no_prompt {
-            direct_test_projects
-                .first()
-                .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+            direct_test_projects.first().map(|p| {
+                p.strip_prefix(&cwd)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
         } else {
             prompt_user_for_target(&direct_test_projects, &cwd)?
         };
@@ -737,9 +904,12 @@ fn resolve_test_target(no_prompt: bool) -> Result<Option<String>> {
 
     if direct_candidates.len() > 1 {
         let target = if no_prompt {
-            direct_candidates
-                .first()
-                .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+            direct_candidates.first().map(|p| {
+                p.strip_prefix(&cwd)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
         } else {
             prompt_user_for_target(&direct_candidates, &cwd)?
         };
@@ -756,9 +926,12 @@ fn resolve_test_target(no_prompt: bool) -> Result<Option<String>> {
     });
 
     let target = if no_prompt {
-        candidates
-            .first()
-            .map(|p| p.strip_prefix(&cwd).unwrap_or(p).to_string_lossy().replace('\\', "/"))
+        candidates.first().map(|p| {
+            p.strip_prefix(&cwd)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
     } else {
         prompt_user_for_target(&candidates, &cwd)?
     };
@@ -766,18 +939,25 @@ fn resolve_test_target(no_prompt: bool) -> Result<Option<String>> {
     Ok(target)
 }
 
-fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String>> {
-    let target = resolve_test_target(false)?;
+fn discover_display_names(
+    target: Option<&str>,
+    no_build: bool,
+    no_restore: bool,
+) -> Result<Vec<String>> {
     let mut cmd = Command::new("dotnet");
     cmd.arg("test")
         .arg("/p:UseSharedCompilation=true")
         .arg("/p:BaseOutputPath=bin/dotest/")
         .arg("-t");
-    if let Some(target) = &target {
+    if let Some(target) = target {
         cmd.arg(target);
     }
-    if no_build { cmd.arg("--no-build"); }
-    if no_restore { cmd.arg("--no-restore"); }
+    if no_build {
+        cmd.arg("--no-build");
+    }
+    if no_restore {
+        cmd.arg("--no-restore");
+    }
     let output = cmd.output().context("Failed to run dotnet test -t")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -785,8 +965,11 @@ fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String
     let mut capturing = false;
     for line in stdout.lines() {
         let trimmed = line.trim();
-        if trimmed == "The following Tests are available:" { capturing = true; continue; }
-        
+        if trimmed == "The following Tests are available:" {
+            capturing = true;
+            continue;
+        }
+
         if capturing && !trimmed.is_empty() {
             let lower = trimmed.to_lowercase();
             // Skip obvious summary/footer lines (some SDKs append these after the list)
@@ -811,7 +994,7 @@ fn discover_display_names(no_build: bool, no_restore: bool) -> Result<Vec<String
                 &stderr,
                 no_build,
                 no_restore,
-                target.as_deref(),
+                target,
             )
         );
     }
@@ -826,7 +1009,8 @@ pub(crate) fn format_discovery_failure(
     no_restore: bool,
     target: Option<&str>,
 ) -> String {
-    let mut command = "dotnet test /p:UseSharedCompilation=true /p:BaseOutputPath=bin/dotest/ -t".to_string();
+    let mut command =
+        "dotnet test /p:UseSharedCompilation=true /p:BaseOutputPath=bin/dotest/ -t".to_string();
     if let Some(target) = target {
         command.push(' ');
         command.push_str(target);
@@ -903,8 +1087,6 @@ Choose another solution/project target, or clone the missing dependency repos.",
     message
 }
 
-
-
 /// Build a `dotnet test` Command with filter and config exclusions applied.
 /// Caller controls Stdio (piped vs inherited).
 pub fn build_test_command(filter: Option<String>, no_build: bool, no_restore: bool) -> Command {
@@ -920,20 +1102,29 @@ pub fn build_test_command(filter: Option<String>, no_build: bool, no_restore: bo
     if let Ok(config) = Config::new() {
         if let Ok(settings) = config.load_settings() {
             if !settings.excluded_categories.is_empty() {
-                let excludes: Vec<String> = settings.excluded_categories.iter()
+                let excludes: Vec<String> = settings
+                    .excluded_categories
+                    .iter()
                     .map(|c| format!("Category!={}", c))
                     .collect();
                 let exclude_str = excludes.join("&");
                 match final_filter {
                     Some(f) => final_filter = Some(format!("({})&({})", f, exclude_str)),
-                    None    => final_filter = Some(exclude_str),
+                    None => final_filter = Some(exclude_str),
                 }
             }
         }
     }
 
-    if let Some(f) = final_filter { cmd.arg("--filter"); cmd.arg(f); }
-    if no_build { cmd.arg("--no-build"); }
-    if no_restore { cmd.arg("--no-restore"); }
+    if let Some(f) = final_filter {
+        cmd.arg("--filter");
+        cmd.arg(f);
+    }
+    if no_build {
+        cmd.arg("--no-build");
+    }
+    if no_restore {
+        cmd.arg("--no-restore");
+    }
     cmd
 }

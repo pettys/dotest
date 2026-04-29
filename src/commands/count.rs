@@ -1,7 +1,7 @@
-use anyhow::{Context, Result};
 use crate::commands::ui::config::RunConfig;
 use crate::core::count::{resolve_short_segment_to_prefix, sum_for_count_query, tree_under_prefix};
 use crate::core::executor::discover_tests;
+use anyhow::{Context, Result};
 
 pub fn run(folder: String, no_build: bool) -> Result<()> {
     let run_config = RunConfig::load();
@@ -11,9 +11,7 @@ pub fn run(folder: String, no_build: bool) -> Result<()> {
         let s = sum_for_count_query(&tests, &folder);
         let b = tests
             .iter()
-            .filter(|(_, fk, _)| {
-                fk == p.as_str() || fk.starts_with(&format!("{}.", p))
-            })
+            .filter(|(_, fk, _)| fk == p.as_str() || fk.starts_with(&format!("{}.", p)))
             .count();
         (p, s, b)
     } else {

@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::core::executor::build_test_command;
+use anyhow::Result;
 use std::io::{self, BufRead};
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -15,14 +15,17 @@ pub(super) enum OutputEvent {
     Finished(Option<i32>),
 }
 
-pub(super) fn spawn_test_run(filter: Option<String>, config: &RunConfig) -> Result<(mpsc::Receiver<OutputEvent>, u32)> {
+pub(super) fn spawn_test_run(
+    filter: Option<String>,
+    config: &RunConfig,
+) -> Result<(mpsc::Receiver<OutputEvent>, u32)> {
     let (tx, rx) = mpsc::channel();
 
     let filter_arg = match filter.as_deref() {
         Some("") | None => None,
         Some(f) if f.len() > 31000 => {
             let _ = tx.send(OutputEvent::Line(
-                "⚠ Filter too long for Windows. Running ALL tests instead.".to_string()
+                "⚠ Filter too long for Windows. Running ALL tests instead.".to_string(),
             ));
             let _ = tx.send(OutputEvent::Line(String::new()));
             None
@@ -56,12 +59,16 @@ pub(super) fn spawn_test_run(filter: Option<String>, config: &RunConfig) -> Resu
 
     thread::spawn(move || {
         for line in io::BufReader::new(stdout).lines().flatten() {
-            if tx.send(OutputEvent::Line(line)).is_err() { break; }
+            if tx.send(OutputEvent::Line(line)).is_err() {
+                break;
+            }
         }
     });
     thread::spawn(move || {
         for line in io::BufReader::new(stderr).lines().flatten() {
-            if tx2.send(OutputEvent::Line(line)).is_err() { break; }
+            if tx2.send(OutputEvent::Line(line)).is_err() {
+                break;
+            }
         }
     });
     thread::spawn(move || {
@@ -84,6 +91,8 @@ pub(super) fn kill_process(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
     }
 }

@@ -40,8 +40,8 @@ pub(crate) struct RunConfig {
     pub output_mode: OutputMode,
     /// When set, a background watcher re-runs **only the tests you have checked in the tree**
     /// when `.cs` files change (debounced). For this option, you choose the scope.
-	/// In the future, maybe add an automatic scope based on impact analysis.
-	/// I tried, but it didn't work well. Halting for now.
+    /// In the future, maybe add an automatic scope based on impact analysis.
+    /// I tried, but it didn't work well. Halting for now.
     #[serde(default)]
     pub manual_watch_enabled: bool,
     #[serde(default = "default_manual_watch_delay_ms")]

@@ -25,19 +25,32 @@ struct NodeBuilder {
 
 impl NodeBuilder {
     fn new() -> Self {
-        NodeBuilder { children: BTreeMap::new(), leaves: Vec::new() }
+        NodeBuilder {
+            children: BTreeMap::new(),
+            leaves: Vec::new(),
+        }
     }
 }
 
-fn flatten_node(node: &NodeBuilder, flat: &mut Vec<TreeNode>, depth: usize, parent_idx: Option<usize>, prefix: &str) {
+fn flatten_node(
+    node: &NodeBuilder,
+    flat: &mut Vec<TreeNode>,
+    depth: usize,
+    parent_idx: Option<usize>,
+    prefix: &str,
+) {
     // Folders / class nodes first (alphabetically, from BTreeMap)
     for (label, child) in &node.children {
         let idx = flat.len();
-        let new_prefix = if prefix.is_empty() { label.clone() } else { format!("{}.{}", prefix, label) };
+        let new_prefix = if prefix.is_empty() {
+            label.clone()
+        } else {
+            format!("{}.{}", prefix, label)
+        };
         flat.push(TreeNode {
             label: label.clone(),
             fqn: Some(new_prefix.clone()),
-            is_selected: false,   // <- default unselected
+            is_selected: false, // <- default unselected
             is_expanded: false,
             depth,
             parent_idx,
@@ -52,7 +65,7 @@ fn flatten_node(node: &NodeBuilder, flat: &mut Vec<TreeNode>, depth: usize, pare
         flat.push(TreeNode {
             label: label.clone(),
             fqn: Some(filter_key.clone()),
-            is_selected: false,   // <- default unselected
+            is_selected: false, // <- default unselected
             is_expanded: true,
             depth,
             parent_idx,
@@ -80,12 +93,17 @@ pub fn build_flat_tree(tests: &[(String, String, usize)]) -> Vec<TreeNode> {
     for (tree_fqn, filter_key, count) in tests {
         let parts: Vec<&str> = tree_fqn.split('.').collect();
         let len = parts.len();
-        if len == 0 { continue; }
+        if len == 0 {
+            continue;
+        }
 
         let mut current = &mut root;
         // Navigate (or create) intermediate nodes for all segments except the last
         for &part in &parts[..len - 1] {
-            current = current.children.entry(part.to_string()).or_insert_with(NodeBuilder::new);
+            current = current
+                .children
+                .entry(part.to_string())
+                .or_insert_with(NodeBuilder::new);
         }
 
         // Last segment = display label of the leaf
@@ -93,7 +111,9 @@ pub fn build_flat_tree(tests: &[(String, String, usize)]) -> Vec<TreeNode> {
 
         // Deduplicate by filter_key (parameterised variants share the same base name)
         if !current.leaves.iter().any(|(_, k, _)| k == filter_key) {
-            current.leaves.push((leaf_label, filter_key.clone(), *count));
+            current
+                .leaves
+                .push((leaf_label, filter_key.clone(), *count));
         }
     }
 
