@@ -6,6 +6,7 @@
 //! slow `dotnet test -t` rediscovery.
 
 use anyhow::{Context, Result};
+use crate::core::tree::TreeState;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -19,6 +20,8 @@ pub(crate) const CACHE_PATH: &str = ".dotest_cache.json";
 struct DiscoveryCacheFile {
     fingerprint: String,
     tests: Vec<(String, String, usize)>,
+    #[serde(default)]
+    tree_state: Option<TreeState>,
 }
 
 fn hash_dir(path: &Path, depth: usize, max_depth: usize, h: &mut Sha256) -> io::Result<()> {
@@ -116,11 +119,29 @@ pub(crate) fn save_discovery_cache(tests: &[(String, String, usize)]) -> Result<
     }
 
     let fp = compute_source_fingerprint();
+    // Preserve any existing tree_state when rewriting the cache.
+    let existing_state = load_tree_state();
     let file = DiscoveryCacheFile {
         fingerprint: fp,
         tests: tests.to_vec(),
+        tree_state: existing_state,
     };
     let s = serde_json::to_string(&file).context("serialize discovery cache")?;
     fs::write(CACHE_PATH, s).context("write discovery cache")?;
     Ok(())
+}
+
+pub(crate) fn save_tree_state(state: TreeState) {
+    let Ok(s) = fs::read_to_string(CACHE_PATH) else { return; };
+    let Ok(mut file) = serde_json::from_str::<DiscoveryCacheFile>(&s) else { return; };
+    file.tree_state = Some(state);
+    if let Ok(out) = serde_json::to_string(&file) {
+        let _ = fs::write(CACHE_PATH, out);
+    }
+}
+
+pub(crate) fn load_tree_state() -> Option<TreeState> {
+    let s = fs::read_to_string(CACHE_PATH).ok()?;
+    let file: DiscoveryCacheFile = serde_json::from_str(&s).ok()?;
+    file.tree_state
 }

@@ -1,5 +1,5 @@
 use crate::core::executor::discover_tests;
-use crate::core::tree::{build_flat_tree, TreeNode};
+use crate::core::tree::{build_flat_tree, sync_parents, TreeNode, TreeState};
 use anyhow::Result;
 use arboard::Clipboard;
 use std::io;
@@ -35,7 +35,7 @@ use ratatui::{
 };
 
 use super::config::{OutputMode, RunConfig, Verbosity};
-use super::filter::{build_filter, sync_parents};
+use super::filter::build_filter;
 use super::layout::{
     centered_rect, format_elapsed, output_wrapped_scroll_max, styled_output_lines,
 };
@@ -62,6 +62,7 @@ pub(super) fn run_interactive_loop(
     let mut output_lines: Vec<String> = Vec::new();
     let mut output_rx: Option<mpsc::Receiver<OutputEvent>> = None;
     let mut rediscovery_rx: Option<mpsc::Receiver<RediscoveryResult>> = None;
+    let mut rediscovery_sel: Option<TreeState> = None;
     let mut is_running = false;
     let mut is_rediscovering = false;
     let mut output_scroll: u16 = 0;
@@ -202,7 +203,11 @@ pub(super) fn run_interactive_loop(
         if let Some(ref rx) = rediscovery_rx {
             match rx.try_recv() {
                 Ok(Ok(tests)) => {
-                    *tree = build_flat_tree(&tests);
+                    let mut new_tree = build_flat_tree(&tests);
+                    if let Some(sel) = rediscovery_sel.take() {
+                        sel.restore(&mut new_tree);
+                    }
+                    *tree = new_tree;
                     state.select(Some(0));
                     search_query.clear();
                     let total: usize = tests.iter().map(|(_, _, c)| c).sum();
@@ -220,6 +225,7 @@ pub(super) fn run_interactive_loop(
                     is_rediscovering = false;
                     rediscovery_start = None;
                     rediscovery_rx = None;
+                    rediscovery_sel = None;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -227,6 +233,7 @@ pub(super) fn run_interactive_loop(
                     is_rediscovering = false;
                     rediscovery_start = None;
                     rediscovery_rx = None;
+                    rediscovery_sel = None;
                 }
             }
         }
@@ -1290,6 +1297,7 @@ pub(super) fn run_interactive_loop(
                         show_output_fullscreen = run_config.output_mode == OutputMode::Fullscreen;
                         is_rediscovering = true;
                         rediscovery_start = Some(Instant::now());
+                        rediscovery_sel = Some(TreeState::capture(tree));
 
                         let no_restore = run_config.no_restore;
                         let (tx, rx) = mpsc::channel();
@@ -1461,6 +1469,7 @@ pub(super) fn run_interactive_loop(
     if let Some(h) = manual_watch_handle {
         h.stop();
     }
+    super::discovery_cache::save_tree_state(TreeState::capture(tree));
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),

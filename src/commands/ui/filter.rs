@@ -52,21 +52,3 @@ pub(super) fn build_filter(tree: &[TreeNode]) -> Option<String> {
         Some(include_str)
     }
 }
-
-pub(super) fn sync_parents(tree: &mut Vec<TreeNode>) {
-    for i in (0..tree.len()).rev() {
-        if tree[i].is_leaf {
-            continue;
-        }
-        let mut all = true;
-        let mut j = i + 1;
-        while j < tree.len() && tree[j].depth > tree[i].depth {
-            if tree[j].is_leaf && !tree[j].is_selected {
-                all = false;
-                break;
-            }
-            j += 1;
-        }
-        tree[i].is_selected = all;
-    }
-}

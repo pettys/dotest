@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Debug)]
 pub struct TreeNode {
@@ -176,6 +176,72 @@ fn truncate_to_dot_segments(s: &str, max_segments: usize) -> String {
     let parts: Vec<&str> = s.split('.').collect();
     let n = parts.len().min(max_segments);
     parts[..n].join(".")
+}
+
+/// Propagates selection state up the tree: a non-leaf is selected iff all its leaf descendants are selected.
+pub fn sync_parents(tree: &mut Vec<TreeNode>) {
+    for i in (0..tree.len()).rev() {
+        if tree[i].is_leaf { continue; }
+        let mut all = true;
+        let mut j = i + 1;
+        while j < tree.len() && tree[j].depth > tree[i].depth {
+            if tree[j].is_leaf && !tree[j].is_selected { all = false; break; }
+            j += 1;
+        }
+        tree[i].is_selected = all;
+    }
+}
+
+/// Captures and restores the selection and expansion state of a tree across a rebuild.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TreeState {
+    /// fqn -> is_selected for every leaf in the old tree.
+    leaves: HashMap<String, bool>,
+    /// fqns of non-leaf nodes that were fully selected (all children checked).
+    selected_groups: Vec<String>,
+    /// fqns of non-leaf nodes that were expanded.
+    expanded: std::collections::HashSet<String>,
+}
+
+impl TreeState {
+    pub fn capture(tree: &[TreeNode]) -> Self {
+        let leaves = tree
+            .iter()
+            .filter(|n| n.is_leaf)
+            .filter_map(|n| n.fqn.as_ref().map(|f| (f.clone(), n.is_selected)))
+            .collect();
+        let selected_groups = tree
+            .iter()
+            .filter(|n| !n.is_leaf && n.is_selected)
+            .filter_map(|n| n.fqn.clone())
+            .collect();
+        let expanded = tree
+            .iter()
+            .filter(|n| !n.is_leaf && n.is_expanded)
+            .filter_map(|n| n.fqn.clone())
+            .collect();
+        Self { leaves, selected_groups, expanded }
+    }
+
+    pub fn restore(&self, tree: &mut Vec<TreeNode>) {
+        for node in tree.iter_mut() {
+            if let Some(ref fqn) = node.fqn {
+                if node.is_leaf {
+                    if let Some(&was_selected) = self.leaves.get(fqn) {
+                        node.is_selected = was_selected;
+                    } else {
+                        // New test: inherit from a selected ancestor group.
+                        node.is_selected = self.selected_groups.iter().any(|prefix| {
+                            fqn == prefix || fqn.starts_with(&format!("{}.", prefix))
+                        });
+                    }
+                } else {
+                    node.is_expanded = self.expanded.contains(fqn);
+                }
+            }
+        }
+        sync_parents(tree);
+    }
 }
 
 fn common_prefix_bytes<'a>(a: &'a str, b: &str) -> &'a str {
