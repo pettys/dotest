@@ -75,6 +75,7 @@ pub(super) fn run_interactive_loop(
     let mut run_skipped = 0;
     let mut failed_tests: Vec<FailedTestInfo> = Vec::new();
     let mut show_failure_summary = false;
+    let mut show_failure_summary_help = false;
     let mut failed_selection: usize = 0;
     let mut failed_detail_scroll: u16 = 0;
     // Detail line index for stack links while the pointer is over that line in Error Details.
@@ -248,6 +249,7 @@ pub(super) fn run_interactive_loop(
             {
                 if show_failure_summary {
                     show_failure_summary = false;
+                    show_failure_summary_help = false;
                     failure_detail_hover = None;
                 }
                 let filter = build_filter(tree);
@@ -731,10 +733,61 @@ pub(super) fn run_interactive_loop(
                 f.render_widget(detail_widget, body[1]);
 
                 let footer = Paragraph::new(
-                    " Shift+↑/↓: pick test  |  ↑/↓/Pg: scroll  |  link highlights under pointer  |  click to open  |  c d r R Esc ",
+                    " Shift+↑/↓: pick test  |  ?: shortcuts ",
                 )
                 .style(Style::default().fg(Color::Red));
                 f.render_widget(footer, inner[1]);
+
+                if show_failure_summary_help {
+                    let help_popup = centered_rect(62, 36, area);
+                    f.render_widget(Clear, help_popup);
+                    let help_lines = vec![
+                        Line::from(Span::styled(
+                            " Navigation",
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from("  Shift+↑/↓ : Select failed test"),
+                        Line::from("  ↑/↓       : Scroll error details"),
+                        Line::from("  PgUp/PgDn : Scroll details faster"),
+                        Line::from("  Home/End  : Jump details to top/bottom"),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            " Actions",
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from("  c         : Copy failed test names"),
+                        Line::from("  d or m    : Copy selected failure details"),
+                        Line::from("  r         : Re-run selected failed test"),
+                        Line::from("  R         : Re-run all failed tests"),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            " Mouse",
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from("  Click test list      : Select failed test"),
+                        Line::from("  Click stack-trace link: Open file in editor"),
+                        Line::from("  Wheel / drag in details: Scroll details"),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "  ? / Esc / Enter closes this shortcuts window.",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        Line::from(Span::styled(
+                            "  Esc also closes the Failed Tests Summary.",
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                    ];
+
+                    let help_widget = Paragraph::new(help_lines)
+                        .block(
+                            Block::default()
+                                .title(" Failed Summary Shortcuts ")
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        )
+                        .wrap(Wrap { trim: false });
+                    f.render_widget(help_widget, help_popup);
+                }
             }
         })?;
 
@@ -898,11 +951,25 @@ pub(super) fn run_interactive_loop(
                     }
 
                     if show_failure_summary {
+                        if show_failure_summary_help {
+                            match key.code {
+                                KeyCode::Char('?') | KeyCode::Esc | KeyCode::Enter => {
+                                    show_failure_summary_help = false;
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
                         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                         match key.code {
                             KeyCode::Esc => {
                                 show_failure_summary = false;
+                                show_failure_summary_help = false;
                                 failure_detail_hover = None;
+                            }
+                            KeyCode::Char('?') => {
+                                show_failure_summary_help = true;
                             }
                             KeyCode::Up => {
                                 if !failed_tests.is_empty() {
@@ -1007,6 +1074,7 @@ pub(super) fn run_interactive_loop(
                                             &f.name,
                                         )]);
                                     show_failure_summary = false;
+                                    show_failure_summary_help = false;
                                     failure_detail_hover = None;
                                     launch_filtered_test_run(
                                         fk,
@@ -1037,6 +1105,7 @@ pub(super) fn run_interactive_loop(
                                     let n = names.len();
                                     let fk = build_filter_for_display_names(&names);
                                     show_failure_summary = false;
+                                    show_failure_summary_help = false;
                                     failure_detail_hover = None;
                                     launch_filtered_test_run(
                                         fk,
