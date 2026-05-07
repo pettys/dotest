@@ -947,7 +947,7 @@ fn discover_display_names(
     let mut cmd = Command::new("dotnet");
     cmd.arg("test")
         .arg("/p:UseSharedCompilation=true")
-        .arg("/p:BaseOutputPath=bin/dotest/")
+        .arg(get_base_output_path_arg())
         .arg("-t");
     if let Some(target) = target {
         cmd.arg(target);
@@ -1010,7 +1010,7 @@ pub(crate) fn format_discovery_failure(
     target: Option<&str>,
 ) -> String {
     let mut command =
-        "dotnet test /p:UseSharedCompilation=true /p:BaseOutputPath=bin/dotest/ -t".to_string();
+        format!("dotnet test /p:UseSharedCompilation=true {} -t", get_base_output_path_arg());
     if let Some(target) = target {
         command.push(' ');
         command.push_str(target);
@@ -1093,7 +1093,7 @@ pub fn build_test_command(filter: Option<String>, no_build: bool, no_restore: bo
     let mut cmd = Command::new("dotnet");
     cmd.arg("test")
         .arg("/p:UseSharedCompilation=true")
-        .arg("/p:BaseOutputPath=bin/dotest/");
+        .arg(get_base_output_path_arg());
     if let Ok(Some(target)) = resolve_test_target(true) {
         cmd.arg(target);
     }
@@ -1127,4 +1127,12 @@ pub fn build_test_command(filter: Option<String>, no_build: bool, no_restore: bo
         cmd.arg("--no-restore");
     }
     cmd
+}
+
+/// Returns the `/p:BaseOutputPath=...` MSBuild argument with an absolute path.
+fn get_base_output_path_arg() -> String {
+    let path = std::env::current_dir()
+        .unwrap_or_default()
+        .join("bin/dotest/");
+    format!("/p:BaseOutputPath={}", path.display())
 }

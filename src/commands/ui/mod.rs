@@ -32,5 +32,8 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
     let mut tree = build_flat_tree(&tests);
+    if let Some(state) = discovery_cache::load_tree_state() {
+        state.restore(&mut tree);
+    }
     interactive::run_interactive_loop(&mut tree, config)
 }
