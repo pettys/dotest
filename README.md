@@ -51,6 +51,8 @@ Once you are in the application, use the following shortcuts:
 
 #### Options & Configuration
 - **Ctrl+P** : Open settings (toggles for skipping build, verbosity logic, caching optimizations).
+- **Ctrl+S** : Save current checked tests as a reusable preset (required unique name, optional tag).
+- **Ctrl+L** : Open presets list and run a preset in one action.
 - **F5** : Manually rediscover and refresh tests from the hard drive.
 - **? or F1** : View the Help Dialog.
 

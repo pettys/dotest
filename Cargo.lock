@@ -369,6 +369,7 @@ dependencies = [
  "crossterm",
  "dialoguer",
  "directories",
+ "libc",
  "notify",
  "ratatui",
  "serde",

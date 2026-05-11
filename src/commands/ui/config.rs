@@ -13,6 +13,15 @@ pub(crate) enum OutputMode {
     Fullscreen,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct TestPreset {
+    pub name: String,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub tests: Vec<String>,
+}
+
 fn default_output_mode() -> OutputMode {
     OutputMode::Split
 }
@@ -46,6 +55,8 @@ pub(crate) struct RunConfig {
     pub manual_watch_enabled: bool,
     #[serde(default = "default_manual_watch_delay_ms")]
     pub manual_watch_delay_ms: u32,
+    #[serde(default)]
+    pub presets: Vec<TestPreset>,
 }
 
 impl Default for RunConfig {
@@ -58,6 +69,7 @@ impl Default for RunConfig {
             output_mode: OutputMode::Split,
             manual_watch_enabled: false,
             manual_watch_delay_ms: 2000,
+            presets: Vec::new(),
         }
     }
 }

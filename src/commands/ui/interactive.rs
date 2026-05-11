@@ -40,6 +40,7 @@ use super::layout::{
     centered_rect, format_elapsed, output_wrapped_scroll_max, styled_output_lines,
 };
 use super::output::{kill_process, OutputEvent};
+use super::presets::{apply_preset_selection, collect_selected_tests, save_preset};
 
 type DiscoveryEntries = Vec<(String, String, usize)>;
 type RediscoveryResult = std::result::Result<DiscoveryEntries, String>;
@@ -86,6 +87,12 @@ pub(super) fn run_interactive_loop(
     let mut config_cursor: usize = 0;
     let mut show_help = false;
     let mut show_output_fullscreen = false;
+    let mut show_save_preset = false;
+    let mut preset_name_input = String::new();
+    let mut preset_tag_input = String::new();
+    let mut preset_input_cursor: usize = 0;
+    let mut show_presets = false;
+    let mut preset_list_cursor: usize = 0;
 
     let root_dir = std::env::current_dir()?;
     let mut manual_watch_handle: Option<ManualWatchHandle> = None;
@@ -245,7 +252,13 @@ pub(super) fn run_interactive_loop(
             while h.rx.try_recv().is_ok() {
                 fired = true;
             }
-            if fired && run_config.manual_watch_enabled && !is_running && !show_config && !show_help
+            if fired
+                && run_config.manual_watch_enabled
+                && !is_running
+                && !show_config
+                && !show_help
+                && !show_save_preset
+                && !show_presets
             {
                 if show_failure_summary {
                     show_failure_summary = false;
@@ -518,7 +531,7 @@ pub(super) fn run_interactive_loop(
                 if run_config.manual_watch_enabled {
                     text.push_str(watch_hint);
                 }
-                text.push_str("  Ctrl+E: failed summary ");
+                text.push_str("  Ctrl+S: save preset  Ctrl+L: presets  Ctrl+E: failed summary ");
                 text.push_str(" ?: help  Esc: quit ");
                 text
             };
@@ -617,6 +630,8 @@ pub(super) fn run_interactive_loop(
                     Line::from("  Ctrl+A    : Toggle all visible tests (select all or clear all)"),
                     Line::from("  Ctrl+W    : Toggle manual watch on/off (saved). ● WATCH ON in status when active"),
                     Line::from("  Ctrl+P    : Settings (verbosity, output mode, watch debounce, …)"),
+                    Line::from("  Ctrl+S    : Save selected tests as a reusable preset (name required, optional tag)"),
+                    Line::from("  Ctrl+L    : Open presets and run one preset in a single action"),
                     Line::from("  Ctrl+E    : Failed tests summary (opens immediately and fills as failures arrive)"),
                     Line::from(""),
                     Line::from(Span::styled(" Tool & discovery", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
@@ -641,6 +656,80 @@ pub(super) fn run_interactive_loop(
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Yellow)));
                 f.render_widget(help_widget, popup);
+            }
+
+            if show_save_preset {
+                let popup = centered_rect(70, 11, area);
+                f.render_widget(Clear, popup);
+                let name_style = if preset_input_cursor == 0 {
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let tag_style = if preset_input_cursor == 1 {
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let save_lines = vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("  Name (required, unique): {}", preset_name_input),
+                        name_style,
+                    )),
+                    Line::from(Span::styled(
+                        format!("  Tag (optional): {}", preset_tag_input),
+                        tag_style,
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "  ↑/↓ or Tab: field  |  Enter: save  |  Esc: cancel  |  Backspace: delete",
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ];
+                let save_widget = Paragraph::new(save_lines).block(
+                    Block::default()
+                        .title(" Save Preset (Ctrl+S) ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan)),
+                );
+                f.render_widget(save_widget, popup);
+            }
+
+            if show_presets {
+                let popup = centered_rect(76, 20, area);
+                f.render_widget(Clear, popup);
+                let mut items: Vec<ListItem> = Vec::new();
+                for (idx, preset) in run_config.presets.iter().enumerate() {
+                    let tag = preset
+                        .tag
+                        .as_deref()
+                        .map(|t| format!("  [tag: {}]", t))
+                        .unwrap_or_default();
+                    let line = format!("{} ({} tests){}", preset.name, preset.tests.len(), tag);
+                    let style = if idx == preset_list_cursor {
+                        Style::default()
+                            .bg(Color::DarkGray)
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    items.push(ListItem::new(Line::from(Span::styled(line, style))));
+                }
+                let list = List::new(items).block(
+                    Block::default()
+                        .title(" Presets (Ctrl+L) ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan)),
+                );
+                f.render_widget(list, popup);
             }
 
             if show_failure_summary {
@@ -944,6 +1033,127 @@ pub(super) fn run_interactive_loop(
                         match key.code {
                             KeyCode::Esc | KeyCode::Enter => {
                                 show_help = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    if show_save_preset {
+                        match key.code {
+                            KeyCode::Esc => {
+                                show_save_preset = false;
+                            }
+                            KeyCode::Enter => {
+                                match save_preset(
+                                    &mut run_config,
+                                    tree,
+                                    &preset_name_input,
+                                    Some(preset_tag_input.clone()),
+                                ) {
+                                    Ok(total) => {
+                                        run_config.save();
+                                        output_lines.push(format!(
+                                            "✓ Preset '{}' saved. Total presets: {}.",
+                                            preset_name_input.trim(),
+                                            total
+                                        ));
+                                        show_save_preset = false;
+                                        preset_name_input.clear();
+                                        preset_tag_input.clear();
+                                        preset_input_cursor = 0;
+                                    }
+                                    Err(message) => output_lines.push(format!("✗ {message}")),
+                                }
+                            }
+                            KeyCode::Up => {
+                                preset_input_cursor = preset_input_cursor.saturating_sub(1);
+                            }
+                            KeyCode::Down | KeyCode::Tab => {
+                                preset_input_cursor = (preset_input_cursor + 1).min(1);
+                            }
+                            KeyCode::Backspace => {
+                                if preset_input_cursor == 0 {
+                                    preset_name_input.pop();
+                                } else {
+                                    preset_tag_input.pop();
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                if c.is_alphanumeric() || c.is_ascii_punctuation() || c == ' ' {
+                                    if preset_input_cursor == 0 {
+                                        preset_name_input.push(c);
+                                    } else {
+                                        preset_tag_input.push(c);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    if show_presets {
+                        match key.code {
+                            KeyCode::Esc => {
+                                show_presets = false;
+                            }
+                            KeyCode::Up => {
+                                preset_list_cursor = preset_list_cursor.saturating_sub(1);
+                            }
+                            KeyCode::Down => {
+                                if !run_config.presets.is_empty() {
+                                    preset_list_cursor =
+                                        (preset_list_cursor + 1).min(run_config.presets.len() - 1);
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if let Some(preset) =
+                                    run_config.presets.get(preset_list_cursor).cloned()
+                                {
+                                    let result = apply_preset_selection(tree, &preset);
+                                    if result.applied == 0 {
+                                        output_lines.push(format!(
+                                            "⚠ Preset '{}' has no tests available in current discovery.",
+                                            preset.name
+                                        ));
+                                        show_presets = false;
+                                        continue;
+                                    }
+                                    if result.missing > 0 {
+                                        output_lines.push(format!(
+                                            "⚠ Preset '{}' skipped {} missing test(s) not available in current discovery.",
+                                            preset.name, result.missing
+                                        ));
+                                    }
+                                    if let Some(filter_str) = build_filter(tree) {
+                                        let heading = format!(
+                                            "━━━ Running preset '{}' ({} available test(s))… ━━━",
+                                            preset.name, result.applied
+                                        );
+                                        launch_filtered_test_run(
+                                            filter_str,
+                                            &heading,
+                                            &run_config,
+                                            &mut output_lines,
+                                            &mut output_rx,
+                                            &mut output_scroll,
+                                            &mut output_follow_tail,
+                                            &mut run_pid,
+                                            &mut run_start,
+                                            &mut run_passed,
+                                            &mut run_failed,
+                                            &mut run_skipped,
+                                            &mut failed_tests,
+                                            &mut show_failure_summary,
+                                            &mut failed_selection,
+                                            &mut failed_detail_scroll,
+                                            &mut is_running,
+                                            &mut show_output_fullscreen,
+                                        );
+                                    }
+                                    show_presets = false;
+                                }
                             }
                             _ => {}
                         }
@@ -1328,6 +1538,39 @@ pub(super) fn run_interactive_loop(
                     {
                         show_config = true;
                         config_cursor = 0;
+                        continue;
+                    }
+
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('s' | 'S'))
+                    {
+                        if collect_selected_tests(tree).is_empty() {
+                            output_lines.push(
+                                "⚠ Select at least one test before saving a preset.".to_string(),
+                            );
+                        } else {
+                            show_save_preset = true;
+                            preset_input_cursor = 0;
+                            if preset_name_input.is_empty() {
+                                preset_name_input =
+                                    format!("Preset {}", run_config.presets.len() + 1);
+                            }
+                        }
+                        continue;
+                    }
+
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('l' | 'L'))
+                    {
+                        if run_config.presets.is_empty() {
+                            output_lines.push(
+                                "⚠ No presets saved yet. Press Ctrl+S to save one.".to_string(),
+                            );
+                        } else {
+                            show_presets = true;
+                            preset_list_cursor =
+                                preset_list_cursor.min(run_config.presets.len().saturating_sub(1));
+                        }
                         continue;
                     }
 
